@@ -1,0 +1,15 @@
+# Node
+node_modules/
+frontend/node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Env
+.env
+
+# Build
+frontend/dist/
+backend/.pytest_cache/
