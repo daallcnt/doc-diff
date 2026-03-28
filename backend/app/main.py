@@ -42,6 +42,9 @@ from .schemas import (
     GroupCreate,
     GroupOwnerRead,
     GroupRead,
+    JeonjuRecordItemRead,
+    JeonjuRecordListRead,
+    JeonjuRecordSummaryRead,
     LoginRequest,
     LoginResponse,
     ElectionContactsRead,
@@ -922,15 +925,37 @@ def get_stats_summary(_: None = Depends(require_auth), db: Session = Depends(get
 def list_combined_contacts(
     page: int = Query(default=1, ge=1),
     scope: str = Query(default=UNIFIED_SCOPE_TOTAL),
+    district_name: str = Query(default=""),
+    address_contains: str = Query(default=""),
     _: None = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
     if scope not in {UNIFIED_SCOPE_TOTAL, UNIFIED_SCOPE_MATCHED}:
         raise HTTPException(status_code=400, detail="scope must be one of ['total', 'matched']")
 
-    where_sql = ""
+    conditions: list[str] = []
+    params: dict[str, object] = {}
     if scope == UNIFIED_SCOPE_MATCHED:
-        where_sql = f"WHERE {SUPPORTER_ADDRESS_MATCH_CONDITION}"
+        conditions.append(f"({SUPPORTER_ADDRESS_MATCH_CONDITION})")
+    if district_name.strip():
+        district_dongs = DEFAULT_ELECTION_DISTRICT_DONGS.get(district_name.strip())
+        if district_dongs is None:
+            raise HTTPException(status_code=400, detail=f"선거구 '{district_name}'를 찾을 수 없습니다.")
+        conditions.append("COALESCE(TRIM(c.dong), '') = ANY(:district_dongs)")
+        params["district_dongs"] = district_dongs
+    if address_contains.strip():
+        conditions.append(
+            """
+            (
+              COALESCE(c.city_county, '') ILIKE :address_like
+              OR COALESCE(c.district, '') ILIKE :address_like
+              OR COALESCE(c.dong, '') ILIKE :address_like
+              OR COALESCE(c.address_detail, '') ILIKE :address_like
+            )
+            """
+        )
+        params["address_like"] = f"%{address_contains.strip()}%"
+    where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
     page_size = 100
     meta = db.execute(
@@ -988,9 +1013,11 @@ def list_combined_contacts(
             LEFT JOIN compare_records_view c ON c.phone_normalized = u.phone_normalized
             {where_sql}
             """
-        )
+        ),
+        params,
     ).mappings().first()
 
+    list_params = {**params, "limit": page_size, "offset": (page - 1) * page_size}
     rows = db.execute(
         text(
             f"""
@@ -1058,7 +1085,7 @@ def list_combined_contacts(
             LIMIT :limit OFFSET :offset
             """
         ),
-        {"limit": page_size, "offset": (page - 1) * page_size},
+        list_params,
     ).mappings().all()
 
     total_count = int(meta["total_count"]) if meta else 0
@@ -1134,7 +1161,7 @@ def list_combined_contacts(
                 LIMIT :limit OFFSET :offset
                 """
             ),
-            {"limit": page_size, "offset": (page - 1) * page_size},
+            {**params, "limit": page_size, "offset": (page - 1) * page_size},
         ).mappings().all()
 
     return UnifiedContactListRead(
@@ -1150,15 +1177,37 @@ def list_combined_contacts(
 @app.get("/stats/combined-contacts/export")
 def export_combined_contacts(
     scope: str = Query(default=UNIFIED_SCOPE_TOTAL),
+    district_name: str = Query(default=""),
+    address_contains: str = Query(default=""),
     _: None = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
     if scope not in {UNIFIED_SCOPE_TOTAL, UNIFIED_SCOPE_MATCHED}:
         raise HTTPException(status_code=400, detail="scope must be one of ['total', 'matched']")
 
-    where_sql = ""
+    conditions: list[str] = []
+    params: dict[str, object] = {}
     if scope == UNIFIED_SCOPE_MATCHED:
-        where_sql = f"WHERE {SUPPORTER_ADDRESS_MATCH_CONDITION}"
+        conditions.append(f"({SUPPORTER_ADDRESS_MATCH_CONDITION})")
+    if district_name.strip():
+        district_dongs = DEFAULT_ELECTION_DISTRICT_DONGS.get(district_name.strip())
+        if district_dongs is None:
+            raise HTTPException(status_code=400, detail=f"선거구 '{district_name}'를 찾을 수 없습니다.")
+        conditions.append("COALESCE(TRIM(c.dong), '') = ANY(:district_dongs)")
+        params["district_dongs"] = district_dongs
+    if address_contains.strip():
+        conditions.append(
+            """
+            (
+              COALESCE(c.city_county, '') ILIKE :address_like
+              OR COALESCE(c.district, '') ILIKE :address_like
+              OR COALESCE(c.dong, '') ILIKE :address_like
+              OR COALESCE(c.address_detail, '') ILIKE :address_like
+            )
+            """
+        )
+        params["address_like"] = f"%{address_contains.strip()}%"
+    where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
     rows = db.execute(
         text(
@@ -1225,7 +1274,8 @@ def export_combined_contacts(
             {where_sql}
             ORDER BY u.created_at DESC, u.phone DESC
             """
-        )
+        ),
+        params,
     ).mappings().all()
 
     wb = Workbook()
@@ -1845,6 +1895,8 @@ def get_supporter_stats_summary(
 def list_supporters(
     page: int = Query(default=1, ge=1),
     scope: str = Query(default=SUPPORTER_TOTAL_SCOPE),
+    district_name: str = Query(default=""),
+    address_contains: str = Query(default=""),
     _: None = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
@@ -1852,9 +1904,30 @@ def list_supporters(
         raise HTTPException(status_code=400, detail="scope must be one of ['total', 'matched']")
 
     page_size = 100
-    where_sql = ""
+    conditions: list[str] = []
+    params: dict[str, object] = {}
     if scope == SUPPORTER_MATCHED_SCOPE:
-        where_sql = f"WHERE {SUPPORTER_ADDRESS_MATCH_CONDITION}"
+        conditions.append(f"({SUPPORTER_ADDRESS_MATCH_CONDITION})")
+    if district_name.strip():
+        district_dongs = DEFAULT_ELECTION_DISTRICT_DONGS.get(district_name.strip())
+        if district_dongs is None:
+            raise HTTPException(status_code=400, detail=f"선거구 '{district_name}'를 찾을 수 없습니다.")
+        conditions.append("COALESCE(TRIM(c.dong), '') = ANY(:district_dongs)")
+        params["district_dongs"] = district_dongs
+    if address_contains.strip():
+        conditions.append(
+            """
+            (
+              COALESCE(c.city_county, '') ILIKE :address_like
+              OR COALESCE(c.district, '') ILIKE :address_like
+              OR COALESCE(c.dong, '') ILIKE :address_like
+              OR COALESCE(c.address_detail, '') ILIKE :address_like
+            )
+            """
+        )
+        params["address_like"] = f"%{address_contains.strip()}%"
+
+    where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
     meta = db.execute(
         text(
@@ -1866,9 +1939,11 @@ def list_supporters(
             LEFT JOIN compare_records_view c ON c.phone_normalized = s.phone_normalized
             {where_sql}
             """
-        )
+        ),
+        params,
     ).mappings().first()
 
+    list_params = {**params, "limit": page_size, "offset": (page - 1) * page_size}
     rows = db.execute(
         text(
             f"""
@@ -1889,7 +1964,7 @@ def list_supporters(
             LIMIT :limit OFFSET :offset
             """
         ),
-        {"limit": page_size, "offset": (page - 1) * page_size},
+        list_params,
     ).mappings().all()
 
     total_count = int(meta["total_count"]) if meta else 0
@@ -1918,7 +1993,7 @@ def list_supporters(
                 LIMIT :limit OFFSET :offset
                 """
             ),
-            {"limit": page_size, "offset": (page - 1) * page_size},
+            {**params, "limit": page_size, "offset": (page - 1) * page_size},
         ).mappings().all()
 
     return SupporterListRead(
@@ -1934,15 +2009,38 @@ def list_supporters(
 @app.get("/supporters/export")
 def export_supporters(
     scope: str = Query(default=SUPPORTER_TOTAL_SCOPE),
+    district_name: str = Query(default=""),
+    address_contains: str = Query(default=""),
     _: None = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
     if scope not in {SUPPORTER_TOTAL_SCOPE, SUPPORTER_MATCHED_SCOPE}:
         raise HTTPException(status_code=400, detail="scope must be one of ['total', 'matched']")
 
-    where_sql = ""
+    conditions: list[str] = []
+    params: dict[str, object] = {}
     if scope == SUPPORTER_MATCHED_SCOPE:
-        where_sql = f"WHERE {SUPPORTER_ADDRESS_MATCH_CONDITION}"
+        conditions.append(f"({SUPPORTER_ADDRESS_MATCH_CONDITION})")
+    if district_name.strip():
+        district_dongs = DEFAULT_ELECTION_DISTRICT_DONGS.get(district_name.strip())
+        if district_dongs is None:
+            raise HTTPException(status_code=400, detail=f"선거구 '{district_name}'를 찾을 수 없습니다.")
+        conditions.append("COALESCE(TRIM(c.dong), '') = ANY(:district_dongs)")
+        params["district_dongs"] = district_dongs
+    if address_contains.strip():
+        conditions.append(
+            """
+            (
+              COALESCE(c.city_county, '') ILIKE :address_like
+              OR COALESCE(c.district, '') ILIKE :address_like
+              OR COALESCE(c.dong, '') ILIKE :address_like
+              OR COALESCE(c.address_detail, '') ILIKE :address_like
+            )
+            """
+        )
+        params["address_like"] = f"%{address_contains.strip()}%"
+
+    where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
     rows = db.execute(
         text(
@@ -1962,7 +2060,8 @@ def export_supporters(
             {where_sql}
             ORDER BY s.created_at DESC, s.id DESC
             """
-        )
+        ),
+        params,
     ).mappings().all()
 
     wb = Workbook()
@@ -2083,6 +2182,163 @@ async def upload_jeonju(
         inserted=inserted,
         skipped_duplicate=skipped_duplicate,
         invalid_count=invalid_count,
+    )
+
+
+@app.get("/jeonju/records/summary", response_model=list[JeonjuRecordSummaryRead])
+def get_jeonju_record_summary(_: None = Depends(require_auth), db: Session = Depends(get_db)):
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              category,
+              COUNT(*)::int AS total,
+              NOW() AS refreshed_at
+            FROM jeonju_records
+            GROUP BY category
+            ORDER BY category
+            """
+        )
+    ).mappings().all()
+
+    row_map = {row["category"]: row for row in rows}
+    refreshed_at = datetime.now(tz=KST)
+    items = []
+    for category in sorted(JEONJU_CATEGORIES):
+        row = row_map.get(category)
+        items.append(
+            JeonjuRecordSummaryRead(
+                category=category,
+                total=int(row["total"]) if row else 0,
+                refreshed_at=row["refreshed_at"] if row else refreshed_at,
+            )
+        )
+    return items
+
+
+@app.get("/jeonju/records", response_model=JeonjuRecordListRead)
+def list_jeonju_records(
+    category: str = Query(default="all"),
+    page: int = Query(default=1, ge=1),
+    name: str = Query(default=""),
+    phone: str = Query(default=""),
+    _: None = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    if category not in JEONJU_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"category must be one of {sorted(JEONJU_CATEGORIES)}")
+
+    page_size = 100
+    normalized_phone = normalize_phone(phone) if phone else ""
+    name_keyword = (name or "").strip()
+    where_clauses = ["category = :category"]
+    params: dict[str, object] = {"category": category}
+    if name_keyword:
+        where_clauses.append("COALESCE(jeonju_name, '') ILIKE :name")
+        params["name"] = f"%{name_keyword}%"
+    if normalized_phone:
+        where_clauses.append("phone_normalized LIKE :phone_normalized")
+        params["phone_normalized"] = f"%{normalized_phone}%"
+    where_sql = " AND ".join(where_clauses)
+
+    total_row = db.execute(
+        text(
+            f"""
+            SELECT COUNT(*)::int AS total, NOW() AS refreshed_at
+            FROM jeonju_records
+            WHERE {where_sql}
+            """
+        ),
+        params,
+    ).mappings().first()
+    total = int(total_row["total"]) if total_row else 0
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    current_page = min(page, total_pages) if total > 0 else 1
+
+    list_params = {
+        **params,
+        "limit": page_size,
+        "offset": (current_page - 1) * page_size,
+    }
+    rows = db.execute(
+        text(
+            f"""
+            SELECT id, category, jeonju_name, phone, created_at
+            FROM jeonju_records
+            WHERE {where_sql}
+            ORDER BY created_at DESC, id DESC
+            LIMIT :limit OFFSET :offset
+            """
+        ),
+        list_params,
+    ).mappings().all()
+
+    return JeonjuRecordListRead(
+        category=category,
+        total=total,
+        page=current_page,
+        page_size=page_size,
+        refreshed_at=total_row["refreshed_at"] if total_row else datetime.now(tz=KST),
+        items=[JeonjuRecordItemRead(**row) for row in rows],
+    )
+
+
+@app.get("/jeonju/records/export")
+def export_jeonju_records(
+    category: str = Query(default="all"),
+    name: str = Query(default=""),
+    phone: str = Query(default=""),
+    _: None = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    if category not in JEONJU_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"category must be one of {sorted(JEONJU_CATEGORIES)}")
+
+    normalized_phone = normalize_phone(phone) if phone else ""
+    name_keyword = (name or "").strip()
+    where_clauses = ["category = :category"]
+    params: dict[str, object] = {"category": category}
+    if name_keyword:
+        where_clauses.append("COALESCE(jeonju_name, '') ILIKE :name")
+        params["name"] = f"%{name_keyword}%"
+    if normalized_phone:
+        where_clauses.append("phone_normalized LIKE :phone_normalized")
+        params["phone_normalized"] = f"%{normalized_phone}%"
+    where_sql = " AND ".join(where_clauses)
+
+    rows = db.execute(
+        text(
+            f"""
+            SELECT id, category, jeonju_name, phone, created_at
+            FROM jeonju_records
+            WHERE {where_sql}
+            ORDER BY created_at DESC, id DESC
+            """
+        ),
+        params,
+    ).mappings().all()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "전주시 원본 데이터"
+    ws.append(["이름", "연락처", "입력시각"])
+    for row in rows:
+        ws.append(
+            [
+                row["jeonju_name"] or "",
+                row["phone"] or "",
+                row["created_at"].astimezone(KST).strftime("%Y-%m-%d %H:%M:%S") if row.get("created_at") else "",
+            ]
+        )
+
+    stream = BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+    filename = f"jeonju_records_{category}.xlsx"
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

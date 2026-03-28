@@ -41,23 +41,48 @@ const HASH_TO_VIEW = {
   "#jeonju": "jeonju",
 };
 
-function HomePanel({ onOpenForm, onOpenStats, onOpenTree, onOpenCompare, onOpenJeonju }) {
+function normalizeTableSearchValue(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/\s+/g, "");
+}
+
+function rowMatchesTableSearch(query, values) {
+  const needle = normalizeTableSearchValue(query);
+  if (!needle) return true;
+  return values.some((value) => normalizeTableSearchValue(value).includes(needle));
+}
+
+function TableSearchBar({ value, onChange, placeholder = "테이블 검색" }) {
   return (
-    <section className="main-actions">
-      <button type="button" onClick={onOpenForm}>
-        데이터 추가하기
-      </button>
-      <button type="button" onClick={onOpenCompare}>
-        비교군 추가하기
-      </button>
-      <button type="button" onClick={onOpenStats}>
-        통계보기
-      </button>
-      <button type="button" onClick={onOpenTree}>
-        트리보기
-      </button>
-      <button type="button" onClick={onOpenJeonju}>
-        전주시 데이터 추가하기
+    <div className="table-search-bar">
+      <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
+    </div>
+  );
+}
+
+function HomePanel({ onOpenForm, onOpenStats, onOpenTree, onOpenCompare, onOpenJeonju, onBackToMain }) {
+  return (
+    <section>
+      <div className="main-actions">
+        <button type="button" onClick={onOpenForm}>
+          데이터 추가하기
+        </button>
+        <button type="button" onClick={onOpenCompare}>
+          비교군 추가하기
+        </button>
+        <button type="button" onClick={onOpenStats}>
+          통계보기
+        </button>
+        <button type="button" onClick={onOpenTree}>
+          트리보기
+        </button>
+        <button type="button" onClick={onOpenJeonju}>
+          전주시 데이터
+        </button>
+      </div>
+      <button type="button" className="secondary-btn" onClick={onBackToMain}>
+        메인화면으로
       </button>
     </section>
   );
@@ -96,14 +121,18 @@ function SupporterPanel({
   supporterStats,
   supporterListData,
   supporterListScope,
+  supporterFilter,
+  electionDistrictMap,
   onUploadSupporters,
   onDownloadSupporterTemplate,
   onRefreshSupporterStats,
   onOpenSupporterList,
+  onSelectSupporterFilter,
   onPageMoveSupporterList,
   onDownloadSupporterListExcel,
   onClose,
 }) {
+  const [tableSearch, setTableSearch] = useState("");
   const progressPercent =
     supporterUploadJob && supporterUploadJob.total_rows
       ? Math.min(100, Math.floor((supporterUploadJob.processed_rows / supporterUploadJob.total_rows) * 100))
@@ -111,6 +140,18 @@ function SupporterPanel({
   const totalSupporterPages = Math.max(1, Math.ceil((supporterListData.total || 0) / (supporterListData.page_size || 100)));
   const supporterListTitle =
     supporterListScope === "matched" ? "비교군 매칭 리스트(주소 있음)" : "총 서포터 리스트";
+  const filteredSupporterItems = supporterListData.items.filter((row) =>
+    rowMatchesTableSearch(tableSearch, [
+      row.supporter_name,
+      row.phone,
+      row.compare_full_name,
+      row.city_county,
+      row.district,
+      row.dong,
+      row.address_detail,
+      row.created_at,
+    ])
+  );
 
   return (
     <section className="supporter-actions">
@@ -201,6 +242,46 @@ function SupporterPanel({
           <p className="hint">
             기준시각: {supporterStats.refreshed_at ? new Date(supporterStats.refreshed_at).toLocaleString() : "-"}
           </p>
+          <div className="district-download-group">
+            <p className="hint">카테고리 선택</p>
+            <div className="district-download-buttons">
+              <button
+                type="button"
+                className={`chip-btn ${supporterFilter.type === "all" ? "active" : ""}`}
+                onClick={() => onSelectSupporterFilter({ type: "all", value: "", label: "전체" })}
+              >
+                전체
+              </button>
+              {Object.keys(electionDistrictMap).map((districtName) => (
+                <button
+                  key={districtName}
+                  type="button"
+                  className={`chip-btn ${supporterFilter.type === "district" && supporterFilter.value === districtName ? "active" : ""}`}
+                  onClick={() => onSelectSupporterFilter({ type: "district", value: districtName, label: districtName })}
+                >
+                  {districtName}
+                </button>
+              ))}
+            </div>
+            <p className="hint">동 카테고리</p>
+            <div className="district-download-buttons">
+              <button
+                type="button"
+                className={`chip-btn ${supporterFilter.type === "keyword" && supporterFilter.value === "효자동" ? "active" : ""}`}
+                onClick={() => onSelectSupporterFilter({ type: "keyword", value: "효자동", label: "효자동 전체" })}
+              >
+                효자동 전체
+              </button>
+              <button
+                type="button"
+                className={`chip-btn ${supporterFilter.type === "keyword" && supporterFilter.value === "송천동" ? "active" : ""}`}
+                onClick={() => onSelectSupporterFilter({ type: "keyword", value: "송천동", label: "송천동 전체" })}
+              >
+                송천동 전체
+              </button>
+            </div>
+            {supporterFilter.type !== "all" ? <p className="hint">선택된 카테고리: {supporterFilter.label}</p> : null}
+          </div>
           {supporterListData.total > 0 ? (
             <>
               <div className="table-toolbar">
@@ -212,6 +293,7 @@ function SupporterPanel({
                 {supporterListTitle} / 총 {supporterListData.total.toLocaleString()}건 / {supporterListData.page}페이지 / 기준시각{" "}
                 {supporterListData.refreshed_at ? new Date(supporterListData.refreshed_at).toLocaleString() : "-"}
               </p>
+              <TableSearchBar value={tableSearch} onChange={setTableSearch} placeholder="서포터 테이블 검색" />
               <div className="table-wrap" id="supporter-records-table">
                 <table>
                   <thead>
@@ -227,8 +309,8 @@ function SupporterPanel({
                     </tr>
                   </thead>
                   <tbody>
-                    {supporterListData.items.length > 0 ? (
-                      supporterListData.items.map((row) => (
+                    {filteredSupporterItems.length > 0 ? (
+                      filteredSupporterItems.map((row) => (
                         <tr key={row.id}>
                           <td>{row.supporter_name || "-"}</td>
                           <td>{row.phone}</td>
@@ -369,6 +451,7 @@ function UploadPanel({
 function StatsPanel({
   summary,
   showUnifiedCards = true,
+  overallOnly = false,
   isDailyOpen,
   dailyRows,
   onToggleDaily,
@@ -381,57 +464,85 @@ function StatsPanel({
   onOpenDailyDetail,
   onClose,
 }) {
+  const [tableSearch, setTableSearch] = useState("");
+  const filteredDailyRows = dailyRows.filter((row) =>
+    rowMatchesTableSearch(tableSearch, [
+      row.stat_date,
+      row.representatives_added,
+      row.managers_added,
+      row.favorite_contacts_added,
+      row.contacts_added,
+    ])
+  );
   return (
     <section>
       <div className="stats-header">
         <h2>통계보기</h2>
-        <button type="button" className="download-link-btn" onClick={onToggleDaily}>
-          {isDailyOpen ? "날짜별 통계 숨기기" : "날짜별 통계보기"}
-        </button>
+        {!overallOnly ? (
+          <button type="button" className="download-link-btn" onClick={onToggleDaily}>
+            {isDailyOpen ? "날짜별 통계 숨기기" : "날짜별 통계보기"}
+          </button>
+        ) : null}
       </div>
 
       <div className="stats-cards">
-        <div className="stats-card">
-          <strong>총 관리인원</strong>
-          <span>{summary.total_managers}</span>
-        </div>
-        <div className="stats-card">
-          <strong>오늘 등록한 대표인원</strong>
-          <span>{summary.today_representatives}</span>
-        </div>
-        <button type="button" className="stats-card stats-card-button" onClick={onOpenTodayManagers}>
-          <strong>오늘 추가된 관리인원</strong>
-          <span>{summary.today_added_managers}</span>
-        </button>
-        <button type="button" className="stats-card stats-card-button" onClick={onOpenFavoriteContacts}>
-          <strong>찜한 연락처 수</strong>
-          <span>{summary.favorite_contacts}</span>
-        </button>
-        {showUnifiedCards ? (
-          <button type="button" className="stats-card stats-card-button" onClick={onOpenCombinedTotal}>
-            <strong>총 지인+서포터 인원(중복제거)</strong>
-            <span>{summary.unified_total_people}</span>
-          </button>
-        ) : null}
-        {showUnifiedCards ? (
-          <button type="button" className="stats-card stats-card-button" onClick={onOpenCombinedMatched}>
-            <strong>비교군 매칭 인원(중복제거)</strong>
-            <span>{summary.unified_matched_with_address}</span>
-          </button>
-        ) : null}
-        <button type="button" className="stats-card stats-card-button" onClick={onOpenContacts}>
-          <strong>총 지인 연락처 수(기존)</strong>
-          <span>{summary.total_contacts}</span>
-        </button>
+        {overallOnly ? (
+          <>
+            <button type="button" className="stats-card stats-card-button" onClick={onOpenCombinedTotal}>
+              <strong>총 지인+서포터 인원(중복제거)</strong>
+              <span>{summary.unified_total_people}</span>
+            </button>
+            <button type="button" className="stats-card stats-card-button" onClick={onOpenCombinedMatched}>
+              <strong>비교군 매칭 인원(중복제거)</strong>
+              <span>{summary.unified_matched_with_address}</span>
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="stats-card">
+              <strong>총 관리인원</strong>
+              <span>{summary.total_managers}</span>
+            </div>
+            <div className="stats-card">
+              <strong>오늘 등록한 대표인원</strong>
+              <span>{summary.today_representatives}</span>
+            </div>
+            <button type="button" className="stats-card stats-card-button" onClick={onOpenTodayManagers}>
+              <strong>오늘 추가된 관리인원</strong>
+              <span>{summary.today_added_managers}</span>
+            </button>
+            <button type="button" className="stats-card stats-card-button" onClick={onOpenFavoriteContacts}>
+              <strong>찜한 연락처 수</strong>
+              <span>{summary.favorite_contacts}</span>
+            </button>
+            {showUnifiedCards ? (
+              <button type="button" className="stats-card stats-card-button" onClick={onOpenCombinedTotal}>
+                <strong>총 지인+서포터 인원(중복제거)</strong>
+                <span>{summary.unified_total_people}</span>
+              </button>
+            ) : null}
+            {showUnifiedCards ? (
+              <button type="button" className="stats-card stats-card-button" onClick={onOpenCombinedMatched}>
+                <strong>비교군 매칭 인원(중복제거)</strong>
+                <span>{summary.unified_matched_with_address}</span>
+              </button>
+            ) : null}
+            <button type="button" className="stats-card stats-card-button" onClick={onOpenContacts}>
+              <strong>총 지인 연락처 수(기존)</strong>
+              <span>{summary.total_contacts}</span>
+            </button>
+          </>
+        )}
       </div>
 
       <p className="hint">기준시각: {summary.refreshed_at ? new Date(summary.refreshed_at).toLocaleString() : "-"}</p>
 
-      {isDailyOpen ? (
+      {!overallOnly && isDailyOpen ? (
         <section className="daily-stats-wrap">
           <button type="button" className="download-link-btn" onClick={onDownloadDailyExcel}>
             엑셀 다운로드
           </button>
+          <TableSearchBar value={tableSearch} onChange={setTableSearch} placeholder="날짜별 통계 검색" />
           <div className="table-wrap">
             <table>
               <thead>
@@ -444,7 +555,7 @@ function StatsPanel({
                 </tr>
               </thead>
               <tbody>
-                {dailyRows.map((row) => (
+                {filteredDailyRows.map((row) => (
                   <tr key={row.stat_date}>
                     <td>{row.stat_date}</td>
                     <td>{row.representatives_added}</td>
@@ -505,13 +616,30 @@ function StatsPanel({
 function CombinedContactsPanel({
   data,
   scope,
+  combinedContactsFilter,
+  electionDistrictMap,
+  onSelectCombinedContactsFilter,
   onPageMove,
   onDownloadExcel,
   onBackToStats,
   onClose,
 }) {
+  const [tableSearch, setTableSearch] = useState("");
   const totalPages = Math.max(1, Math.ceil((data.total || 0) / (data.page_size || 100)));
   const title = scope === "matched" ? "비교군 매칭 인원 리스트" : "총 지인+서포터 인원 리스트";
+  const filteredItems = data.items.filter((row) =>
+    rowMatchesTableSearch(tableSearch, [
+      row.phone,
+      row.person_name,
+      row.supporter_name,
+      row.source,
+      row.city_county,
+      row.district,
+      row.dong,
+      row.address_detail,
+      row.created_at,
+    ])
+  );
 
   return (
     <section>
@@ -525,6 +653,49 @@ function CombinedContactsPanel({
         총 {data.total}건 / {data.page}페이지 / 기준시각{" "}
         {data.refreshed_at ? new Date(data.refreshed_at).toLocaleString() : "-"}
       </p>
+      {scope === "matched" ? (
+        <div className="district-download-group">
+          <p className="hint">선거구 선택</p>
+          <div className="district-download-buttons">
+            <button
+              type="button"
+              className={`chip-btn ${combinedContactsFilter.type === "all" ? "active" : ""}`}
+              onClick={() => onSelectCombinedContactsFilter({ type: "all", value: "", label: "전체" })}
+            >
+              전체
+            </button>
+            {Object.keys(electionDistrictMap).map((districtName) => (
+              <button
+                key={districtName}
+                type="button"
+                className={`chip-btn ${combinedContactsFilter.type === "district" && combinedContactsFilter.value === districtName ? "active" : ""}`}
+                onClick={() => onSelectCombinedContactsFilter({ type: "district", value: districtName, label: districtName })}
+              >
+                {districtName}
+              </button>
+              ))}
+            </div>
+          <p className="hint">동 카테고리</p>
+          <div className="district-download-buttons">
+            <button
+              type="button"
+              className={`chip-btn ${combinedContactsFilter.type === "keyword" && combinedContactsFilter.value === "효자동" ? "active" : ""}`}
+              onClick={() => onSelectCombinedContactsFilter({ type: "keyword", value: "효자동", label: "효자동 전체" })}
+            >
+              효자동 전체
+            </button>
+            <button
+              type="button"
+              className={`chip-btn ${combinedContactsFilter.type === "keyword" && combinedContactsFilter.value === "송천동" ? "active" : ""}`}
+              onClick={() => onSelectCombinedContactsFilter({ type: "keyword", value: "송천동", label: "송천동 전체" })}
+            >
+              송천동 전체
+            </button>
+          </div>
+          {combinedContactsFilter.type !== "all" ? <p className="hint">선택된 카테고리: {combinedContactsFilter.label}</p> : null}
+        </div>
+      ) : null}
+      <TableSearchBar value={tableSearch} onChange={setTableSearch} placeholder="통합 연락처 검색" />
 
       <div className="table-wrap">
         <table>
@@ -542,8 +713,8 @@ function CombinedContactsPanel({
             </tr>
           </thead>
           <tbody>
-            {data.items.length > 0 ? (
-              data.items.map((row, idx) => (
+            {filteredItems.length > 0 ? (
+              filteredItems.map((row, idx) => (
                 <tr key={row.phone || `combined-${idx}`}>
                   <td>{row.phone || "-"}</td>
                   <td>{row.person_name || "-"}</td>
@@ -588,6 +759,7 @@ function CombinedContactsPanel({
 }
 
 function DailyDetailPanel({ detail, loading, error, onBackToStats, onClose }) {
+  const [tableSearch, setTableSearch] = useState("");
   const metricLabelMap = {
     representatives: "추가된 대표인원",
     managers: "추가된 관리인원",
@@ -595,6 +767,16 @@ function DailyDetailPanel({ detail, loading, error, onBackToStats, onClose }) {
     contacts: "추가된 지인 연락처",
   };
   const metricLabel = metricLabelMap[detail.metric] || detail.metric;
+  const filteredRows = detail.rows.filter((row) =>
+    rowMatchesTableSearch(
+      tableSearch,
+      detail.metric === "representatives"
+        ? [row.id, row.name, row.created_at]
+        : detail.metric === "managers"
+          ? [row.group_name, row.owner_name, row.contacts_count, row.favorite_contacts_count, row.called_count, row.party_member_count, row.uploaded_at]
+          : [row.person_name, row.phone, row.city_county, row.dong, row.address_detail]
+    )
+  );
 
   return (
     <section>
@@ -605,6 +787,8 @@ function DailyDetailPanel({ detail, loading, error, onBackToStats, onClose }) {
       {error ? <p className="error">{error}</p> : null}
       {loading ? <p className="hint">불러오는 중...</p> : null}
       {!loading ? (
+        <>
+        <TableSearchBar value={tableSearch} onChange={setTableSearch} placeholder="상세 테이블 검색" />
         <div className="table-wrap">
           <table>
             <thead>
@@ -635,8 +819,8 @@ function DailyDetailPanel({ detail, loading, error, onBackToStats, onClose }) {
               )}
             </thead>
             <tbody>
-              {detail.rows.length > 0 ? (
-                detail.rows.map((row, idx) =>
+              {filteredRows.length > 0 ? (
+                filteredRows.map((row, idx) =>
                   detail.metric === "representatives" ? (
                     <tr key={row.id}>
                       <td>{row.id}</td>
@@ -673,6 +857,7 @@ function DailyDetailPanel({ detail, loading, error, onBackToStats, onClose }) {
             </tbody>
           </table>
         </div>
+        </>
       ) : null}
 
       <div className="panel-actions">
@@ -688,9 +873,22 @@ function DailyDetailPanel({ detail, loading, error, onBackToStats, onClose }) {
 }
 
 function TodayManagersPanel({ rows, onClose, onBackToStats }) {
+  const [tableSearch, setTableSearch] = useState("");
+  const filteredRows = rows.filter((row) =>
+    rowMatchesTableSearch(tableSearch, [
+      row.group_name,
+      row.owner_name,
+      row.contacts_count,
+      row.favorite_contacts_count,
+      row.called_count,
+      row.party_member_count,
+      row.uploaded_at,
+    ])
+  );
   return (
     <section>
       <h2>오늘 추가된 관리인원</h2>
+      <TableSearchBar value={tableSearch} onChange={setTableSearch} placeholder="관리인원 검색" />
       <div className="table-wrap">
         <table>
           <thead>
@@ -705,8 +903,8 @@ function TodayManagersPanel({ rows, onClose, onBackToStats }) {
             </tr>
           </thead>
           <tbody>
-            {rows.length > 0 ? (
-              rows.map((row) => (
+            {filteredRows.length > 0 ? (
+              filteredRows.map((row) => (
                 <tr key={row.owner_id}>
                   <td>{row.group_name}</td>
                   <td>{row.owner_name}</td>
@@ -828,6 +1026,21 @@ function TreePanel({
 }
 
 function TreeOwnerContactsPanel({ ownerDetail, loading, onDownloadExcel, onBack }) {
+  const [tableSearch, setTableSearch] = useState("");
+  const filteredRecords = ownerDetail?.records?.filter((record) =>
+    rowMatchesTableSearch(tableSearch, [
+      record.person_name,
+      record.phone,
+      record.province,
+      record.city_county,
+      record.district,
+      record.dong,
+      record.address_detail,
+      record.intimacy_checked ? "O" : "X",
+      record.called ? "O" : "X",
+      record.party_member ? "O" : "X",
+    ])
+  ) || [];
   return (
     <section>
       <h2>지인 목록</h2>
@@ -842,6 +1055,7 @@ function TreeOwnerContactsPanel({ ownerDetail, loading, onDownloadExcel, onBack 
               엑셀 다운로드
             </button>
           </div>
+          <TableSearchBar value={tableSearch} onChange={setTableSearch} placeholder="지인 목록 검색" />
           <div className="table-wrap">
             <table>
               <thead>
@@ -859,7 +1073,7 @@ function TreeOwnerContactsPanel({ ownerDetail, loading, onDownloadExcel, onBack 
                 </tr>
               </thead>
                 <tbody>
-                  {ownerDetail.records.map((record) => (
+                  {filteredRecords.map((record) => (
                     <tr
                       key={record.id}
                       className={record.intimacy_checked ? "favorite-row" : ""}
@@ -921,9 +1135,21 @@ function ContactListPanel({
   onToggleJeonjuOwners,
   onDownloadJeonjuExcel,
 }) {
+  const [tableSearch, setTableSearch] = useState("");
   const totalPages = Math.max(1, Math.ceil((contactsData.total || 0) / (contactsData.page_size || 100)));
   const canGoPrev = contactsData.page > 1;
   const canGoNext = contactsData.page < totalPages;
+  const filteredContactItems = contactsData.items.filter((row) =>
+    rowMatchesTableSearch(tableSearch, [
+      row.phone,
+      row.name,
+      row.city_county,
+      row.dong,
+      row.address_detail,
+      row.owner_primary_name,
+      row.created_at,
+    ])
+  );
 
   return (
     <section>
@@ -1111,6 +1337,7 @@ function ContactListPanel({
       </div>
 
       <div className="table-wrap">
+        <TableSearchBar value={tableSearch} onChange={setTableSearch} placeholder="지인 연락처 테이블 검색" />
         <table>
           <thead>
             <tr>
@@ -1124,8 +1351,8 @@ function ContactListPanel({
             </tr>
           </thead>
           <tbody>
-            {contactsData.items.length > 0 ? (
-              contactsData.items.map((row) => {
+            {filteredContactItems.length > 0 ? (
+              filteredContactItems.map((row) => {
                 const extraCount = Math.max(0, (row.owner_count || 0) - 1);
                 const ownerList = ownersByPhone[row.phone_normalized] || [];
                 const isOpen = openOwnersPhone === row.phone_normalized;
@@ -1247,9 +1474,21 @@ function ElectionContactsPanel({
   onBackToContacts,
   onClose,
 }) {
+  const [tableSearch, setTableSearch] = useState("");
   const totalPages = Math.max(1, Math.ceil((data.total || 0) / (data.page_size || 100)));
   const canGoPrev = data.page > 1;
   const canGoNext = data.page < totalPages;
+  const filteredItems = data.items.filter((row) =>
+    rowMatchesTableSearch(tableSearch, [
+      row.phone,
+      row.name,
+      row.city_county,
+      row.dong,
+      row.address_detail,
+      row.owner_primary_name,
+      row.owner_count,
+    ])
+  );
 
   return (
     <section className="election-contacts-panel">
@@ -1378,6 +1617,7 @@ function ElectionContactsPanel({
         </div>
       ) : null}
 
+      <TableSearchBar value={tableSearch} onChange={setTableSearch} placeholder="선거구 연락처 테이블 검색" />
       <div className="table-wrap">
         <table className="election-contacts-table">
           <thead>
@@ -1391,8 +1631,8 @@ function ElectionContactsPanel({
             </tr>
           </thead>
           <tbody>
-            {data.items.length > 0 ? (
-              data.items.map((row) => {
+            {filteredItems.length > 0 ? (
+              filteredItems.map((row) => {
                 const ownerList = ownersByPhone[row.phone_normalized] || [];
                 const isOpen = openOwnersPhone === row.phone_normalized;
                 const isLoadingOwners = loadingOwnersPhone === row.phone_normalized;
@@ -1480,6 +1720,17 @@ function ElectionContactsPanel({
 }
 
 function OwnerDetailPanel({ ownerDetail, onBack }) {
+  const [tableSearch, setTableSearch] = useState("");
+  const filteredRecords = ownerDetail.records.filter((record) =>
+    rowMatchesTableSearch(tableSearch, [
+      record.person_name,
+      record.phone,
+      record.intimacy_checked ? "O" : "X",
+      record.called ? "O" : "X",
+      record.party_member ? "O" : "X",
+      record.created_at,
+    ])
+  );
   return (
     <section>
       <h2>관리인원 개인 데이터</h2>
@@ -1488,6 +1739,7 @@ function OwnerDetailPanel({ ownerDetail, onBack }) {
         {ownerDetail.uploaded_at ? new Date(ownerDetail.uploaded_at).toLocaleString() : "-"}
       </p>
 
+      <TableSearchBar value={tableSearch} onChange={setTableSearch} placeholder="개인 데이터 테이블 검색" />
       <div className="table-wrap">
         <table>
           <thead>
@@ -1501,8 +1753,8 @@ function OwnerDetailPanel({ ownerDetail, onBack }) {
             </tr>
           </thead>
           <tbody>
-            {ownerDetail.records.length > 0 ? (
-              ownerDetail.records.map((record) => (
+            {filteredRecords.length > 0 ? (
+              filteredRecords.map((record) => (
                 <tr key={record.id}>
                   <td>{record.person_name || "-"}</td>
                   <td>{record.phone || "-"}</td>
@@ -1523,6 +1775,178 @@ function OwnerDetailPanel({ ownerDetail, onBack }) {
 
       <button type="button" className="secondary-btn" onClick={onBack}>
         연락처 목록으로
+      </button>
+    </section>
+  );
+}
+
+function JeonjuPanel({
+  loading,
+  jeonjuFiles,
+  jeonjuMessage,
+  jeonjuUploadOpen,
+  jeonjuRecordSummary,
+  jeonjuRecordData,
+  jeonjuRecordOpenKey,
+  jeonjuRecordSearchName,
+  jeonjuRecordSearchPhone,
+  setJeonjuRecordSearchName,
+  setJeonjuRecordSearchPhone,
+  onToggleUpload,
+  onSetJeonjuFile,
+  onUploadJeonju,
+  onOpenJeonjuRecords,
+  onSearchJeonjuRecords,
+  onResetJeonjuRecords,
+  onDownloadJeonjuRecordsExcel,
+  onPageMoveJeonjuRecords,
+  onClose,
+}) {
+  const totalPages = Math.max(1, Math.ceil((jeonjuRecordData.total || 0) / (jeonjuRecordData.page_size || 100)));
+
+  return (
+    <section>
+      <div className="stats-header">
+        <h2>전주시 데이터</h2>
+        <button type="button" className="download-link-btn" onClick={onToggleUpload}>
+          {jeonjuUploadOpen ? "데이터 추가 숨기기" : "데이터 추가하기"}
+        </button>
+      </div>
+
+      <p className="hint">카테고리별 업로드 건수를 확인하고, 버튼을 눌러 저장된 원본 리스트를 볼 수 있습니다.</p>
+
+      {jeonjuUploadOpen ? (
+        <section className="jeonju-upload-section">
+          <p className="hint">A열 이름, B열 연락처 형식의 .xlsx 파일을 업로드하세요. 기존 데이터는 교체하지 않고, 같은 카테고리 내 중복 연락처만 제외하고 추가 저장합니다.</p>
+          {JEONJU_CATEGORIES.map(({ key, label }) => (
+            <form key={key} className="upload-form" onSubmit={(e) => onUploadJeonju(e, key)}>
+              <label className="file-input-wrap">
+                {label} 데이터 추가 (.xlsx)
+                <input
+                  type="file"
+                  accept=".xlsx"
+                  onChange={(e) => onSetJeonjuFile(key, e.target.files?.[0] || null)}
+                />
+              </label>
+              <p className="hint">선택 파일: {jeonjuFiles[key]?.name || "없음"}</p>
+              <button type="submit" disabled={loading}>
+                {loading ? "업로드 중..." : `${label} 업로드`}
+              </button>
+            </form>
+          ))}
+        </section>
+      ) : null}
+
+      {jeonjuMessage ? <p className="hint">{jeonjuMessage}</p> : null}
+
+      <div className="stats-cards">
+        {JEONJU_CATEGORIES.map(({ key, label }) => {
+          const summary = jeonjuRecordSummary[key] || { total: 0 };
+          return (
+            <button
+              key={key}
+              type="button"
+              className={`stats-card stats-card-button ${jeonjuRecordOpenKey === key ? "stats-card-selected" : ""}`}
+              onClick={() => onOpenJeonjuRecords(key)}
+              aria-expanded={jeonjuRecordOpenKey === key}
+              aria-controls="jeonju-records-table"
+            >
+              <strong>{label}</strong>
+              <span>{summary.total || 0}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <p className="hint">
+        기준시각: {jeonjuRecordSummary.all?.refreshed_at ? new Date(jeonjuRecordSummary.all.refreshed_at).toLocaleString() : "-"}
+      </p>
+
+      {jeonjuRecordOpenKey ? (
+        <section className="jeonju-records-section" id="jeonju-records-table">
+          <div className="stats-header">
+            <h3>{JEONJU_CATEGORIES.find((category) => category.key === jeonjuRecordOpenKey)?.label || ""} 데이터 리스트</h3>
+            <button type="button" className="download-link-btn" onClick={onDownloadJeonjuRecordsExcel}>
+              엑셀 다운로드
+            </button>
+          </div>
+          <form
+            className="contact-search-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onSearchJeonjuRecords();
+            }}
+          >
+            <input
+              value={jeonjuRecordSearchName}
+              onChange={(event) => setJeonjuRecordSearchName(event.target.value)}
+              placeholder="이름 검색"
+            />
+            <input
+              value={jeonjuRecordSearchPhone}
+              onChange={(event) => setJeonjuRecordSearchPhone(event.target.value)}
+              placeholder="연락처 검색"
+            />
+            <button type="submit">검색</button>
+            <button type="button" className="secondary-btn-inline" onClick={onResetJeonjuRecords}>
+              초기화
+            </button>
+          </form>
+          <p className="hint">
+            총 {jeonjuRecordData.total || 0}건 / {jeonjuRecordData.page || 1}페이지 / 기준시각{" "}
+            {jeonjuRecordData.refreshed_at ? new Date(jeonjuRecordData.refreshed_at).toLocaleString() : "-"}
+          </p>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>이름</th>
+                  <th>연락처</th>
+                  <th>입력시각</th>
+                </tr>
+              </thead>
+              <tbody>
+                {jeonjuRecordData.items.length > 0 ? (
+                  jeonjuRecordData.items.map((item) => (
+                    <tr key={item.id}>
+                      <td>{item.jeonju_name || "-"}</td>
+                      <td>{item.phone || "-"}</td>
+                      <td>{item.created_at ? new Date(item.created_at).toLocaleString() : "-"}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={3}>표시할 데이터가 없습니다.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="pagination-wrap">
+            <button
+              type="button"
+              onClick={() => onPageMoveJeonjuRecords(jeonjuRecordData.page - 1)}
+              disabled={jeonjuRecordData.page <= 1}
+            >
+              이전
+            </button>
+            <span>
+              {jeonjuRecordData.page} / {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => onPageMoveJeonjuRecords(jeonjuRecordData.page + 1)}
+              disabled={jeonjuRecordData.page >= totalPages}
+            >
+              다음
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      <button type="button" className="secondary-btn" onClick={onClose}>
+        돌아가기
       </button>
     </section>
   );
@@ -1553,6 +1977,20 @@ function ComparePanel({
   const latestUpdatedAt = compareData.latest_updated_at || null;
   const totalPages = Math.max(1, Math.ceil(totalCompareCount / (compareData.page_size || 100)));
   const [isCompareListOpen, setIsCompareListOpen] = useState(false);
+  const [tableSearch, setTableSearch] = useState("");
+  const filteredCompareItems = compareData.items.filter((row) =>
+    rowMatchesTableSearch(tableSearch, [
+      row.full_name,
+      row.birth_date,
+      row.phone,
+      row.province,
+      row.city_county,
+      row.district,
+      row.dong,
+      row.address_detail,
+      row.updated_at,
+    ])
+  );
 
   return (
     <section>
@@ -1680,6 +2118,7 @@ function ComparePanel({
             총 {totalCompareCount.toLocaleString()}건 / {compareData.page}페이지 / 마지막 정합{" "}
             {compareData.refreshed_at ? new Date(compareData.refreshed_at).toLocaleString() : "-"}
           </p>
+          <TableSearchBar value={tableSearch} onChange={setTableSearch} placeholder="비교군 테이블 검색" />
           <div className="table-wrap" id="compare-records-table">
             <table>
               <thead>
@@ -1696,8 +2135,8 @@ function ComparePanel({
                 </tr>
               </thead>
               <tbody>
-                {compareData.items.length > 0 ? (
-                  compareData.items.map((row) => (
+                {filteredCompareItems.length > 0 ? (
+                  filteredCompareItems.map((row) => (
                     <tr key={row.id}>
                       <td>{row.full_name || "-"}</td>
                       <td>{row.birth_date || "-"}</td>
@@ -1783,6 +2222,7 @@ export default function App() {
     refreshed_at: "",
   });
   const [supporterListScope, setSupporterListScope] = useState("total");
+  const [supporterFilter, setSupporterFilter] = useState({ type: "all", value: "", label: "전체" });
   const [supporterListData, setSupporterListData] = useState({
     scope: "total",
     total: 0,
@@ -1794,6 +2234,24 @@ export default function App() {
 
   const [jeonjuFiles, setJeonjuFiles] = useState({ all: null, gap: null, eul: null, byeong: null });
   const [jeonjuMessage, setJeonjuMessage] = useState("");
+  const [jeonjuUploadOpen, setJeonjuUploadOpen] = useState(false);
+  const [jeonjuRecordSummary, setJeonjuRecordSummary] = useState({
+    all: { category: "all", total: 0, refreshed_at: "" },
+    gap: { category: "gap", total: 0, refreshed_at: "" },
+    eul: { category: "eul", total: 0, refreshed_at: "" },
+    byeong: { category: "byeong", total: 0, refreshed_at: "" },
+  });
+  const [jeonjuRecordOpenKey, setJeonjuRecordOpenKey] = useState("all");
+  const [jeonjuRecordSearchName, setJeonjuRecordSearchName] = useState("");
+  const [jeonjuRecordSearchPhone, setJeonjuRecordSearchPhone] = useState("");
+  const [jeonjuRecordData, setJeonjuRecordData] = useState({
+    category: "all",
+    total: 0,
+    page: 1,
+    page_size: 100,
+    refreshed_at: "",
+    items: [],
+  });
 
   const [compareFiles, setCompareFiles] = useState([]);
   const [compareData, setCompareData] = useState({
@@ -1822,6 +2280,7 @@ export default function App() {
     refreshed_at: "",
   });
   const [combinedContactsScope, setCombinedContactsScope] = useState("total");
+  const [combinedContactsFilter, setCombinedContactsFilter] = useState({ type: "all", value: "", label: "전체" });
   const [combinedContactsData, setCombinedContactsData] = useState({
     scope: "total",
     total: 0,
@@ -2035,10 +2494,12 @@ export default function App() {
     setStatsSummary(data);
   };
 
-  const fetchCombinedContacts = async (page = 1, scope = combinedContactsScope) => {
+  const fetchCombinedContacts = async (page = 1, scope = combinedContactsScope, filter = combinedContactsFilter) => {
     const params = new URLSearchParams();
     params.set("page", String(page));
     params.set("scope", scope);
+    if (filter?.type === "district" && filter.value) params.set("district_name", filter.value);
+    if (filter?.type === "keyword" && filter.value) params.set("address_contains", filter.value);
     const response = await authFetch(`/stats/combined-contacts?${params.toString()}`);
     const data = await response.json();
     setCombinedContactsData(data);
@@ -2051,10 +2512,12 @@ export default function App() {
     setSupporterStats(data);
   };
 
-  const fetchSupporterList = async (page = 1, scope = supporterListScope) => {
+  const fetchSupporterList = async (page = 1, scope = supporterListScope, filter = supporterFilter) => {
     const params = new URLSearchParams();
     params.set("page", String(page));
     params.set("scope", scope);
+    if (filter?.type === "district" && filter.value) params.set("district_name", filter.value);
+    if (filter?.type === "keyword" && filter.value) params.set("address_contains", filter.value);
     const response = await authFetch(`/supporters/list?${params.toString()}`);
     const data = await response.json();
     setSupporterListData(data);
@@ -2152,6 +2615,37 @@ export default function App() {
     }
   };
 
+  const fetchJeonjuRecordSummary = async () => {
+    const response = await authFetch("/jeonju/records/summary");
+    const data = await response.json();
+    const next = {
+      all: { category: "all", total: 0, refreshed_at: "" },
+      gap: { category: "gap", total: 0, refreshed_at: "" },
+      eul: { category: "eul", total: 0, refreshed_at: "" },
+      byeong: { category: "byeong", total: 0, refreshed_at: "" },
+    };
+    data.forEach((item) => {
+      next[item.category] = item;
+    });
+    setJeonjuRecordSummary(next);
+  };
+
+  const fetchJeonjuRecordList = async (
+    category = "all",
+    page = 1,
+    filters = { name: jeonjuRecordSearchName, phone: jeonjuRecordSearchPhone }
+  ) => {
+    const params = new URLSearchParams();
+    params.set("category", category);
+    params.set("page", String(page));
+    if (filters.name?.trim()) params.set("name", filters.name.trim());
+    if (filters.phone?.trim()) params.set("phone", filters.phone.trim());
+    const response = await authFetch(`/jeonju/records?${params.toString()}`);
+    const data = await response.json();
+    setJeonjuRecordOpenKey(category);
+    setJeonjuRecordData(data);
+  };
+
   const fetchElectionContacts = async ({ page = 1, district = "", unknownOnly = false, city = "", dong = "" } = {}) => {
     const params = new URLSearchParams();
     params.set("page", String(page));
@@ -2227,14 +2721,19 @@ export default function App() {
 
   useEffect(() => {
     if (!token || activeComponent !== "combinedContacts") return;
-    fetchCombinedContacts(1, combinedContactsScope);
+    if (combinedContactsScope === "matched") {
+      fetchElectionDistricts();
+    }
+    fetchCombinedContacts(1, combinedContactsScope, combinedContactsFilter);
   }, [token, activeComponent]);
 
   useEffect(() => {
     if (!token || activeComponent !== "supporter") return;
     fetchSupporterStatsSummary();
+    fetchElectionDistricts();
     setSupporterView("upload");
     setSupporterListScope("total");
+    setSupporterFilter({ type: "all", value: "", label: "전체" });
     setSupporterListData({
       scope: "total",
       total: 0,
@@ -2282,6 +2781,15 @@ export default function App() {
       city: electionSelectedCity,
       dong: electionSelectedDong,
     });
+  }, [token, activeComponent]);
+
+  useEffect(() => {
+    if (!token || activeComponent !== "jeonju") return;
+    setJeonjuUploadOpen(false);
+    setJeonjuRecordSearchName("");
+    setJeonjuRecordSearchPhone("");
+    fetchJeonjuRecordSummary();
+    fetchJeonjuRecordList("all", 1, { name: "", phone: "" });
   }, [token, activeComponent]);
 
   const onLogin = async (event) => {
@@ -2560,7 +3068,17 @@ export default function App() {
 
   const onOpenSupporterList = async (scope) => {
     try {
-      await fetchSupporterList(1, scope);
+      await fetchSupporterList(1, scope, supporterFilter);
+      setSupporterMessage("");
+    } catch {
+      setSupporterMessage("서포터 리스트를 불러오는 중 문제가 발생했습니다.");
+    }
+  };
+
+  const onSelectSupporterFilter = async (filter) => {
+    setSupporterFilter(filter);
+    try {
+      await fetchSupporterList(1, supporterListScope, filter);
       setSupporterMessage("");
     } catch {
       setSupporterMessage("서포터 리스트를 불러오는 중 문제가 발생했습니다.");
@@ -2571,6 +3089,8 @@ export default function App() {
     try {
       const params = new URLSearchParams();
       params.set("scope", supporterListScope);
+      if (supporterFilter.type === "district" && supporterFilter.value) params.set("district_name", supporterFilter.value);
+      if (supporterFilter.type === "keyword" && supporterFilter.value) params.set("address_contains", supporterFilter.value);
       const response = await authFetch(`/supporters/export?${params.toString()}`);
       if (!response.ok) {
         setSupporterMessage("서포터 엑셀 다운로드에 실패했습니다.");
@@ -2621,10 +3141,47 @@ export default function App() {
         `[${categoryLabels[category]}] 읽은 행: ${result.rows_read}, 추가: ${result.inserted}, 중복 제외: ${result.skipped_duplicate}, 오류: ${result.invalid_count}`
       );
       setJeonjuFiles((prev) => ({ ...prev, [category]: null }));
+      await fetchJeonjuRecordSummary();
+      await fetchJeonjuRecordList(category, 1);
     } catch {
       setJeonjuMessage("업로드 중 문제가 발생했습니다.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const onSearchJeonjuRecords = async () => {
+    await fetchJeonjuRecordList(jeonjuRecordOpenKey, 1, {
+      name: jeonjuRecordSearchName,
+      phone: jeonjuRecordSearchPhone,
+    });
+  };
+
+  const onResetJeonjuRecords = async () => {
+    setJeonjuRecordSearchName("");
+    setJeonjuRecordSearchPhone("");
+    await fetchJeonjuRecordList(jeonjuRecordOpenKey, 1, { name: "", phone: "" });
+  };
+
+  const onDownloadJeonjuRecordsExcel = async () => {
+    try {
+      const params = new URLSearchParams();
+      params.set("category", jeonjuRecordOpenKey);
+      if (jeonjuRecordSearchName.trim()) params.set("name", jeonjuRecordSearchName.trim());
+      if (jeonjuRecordSearchPhone.trim()) params.set("phone", jeonjuRecordSearchPhone.trim());
+      const response = await authFetch(`/jeonju/records/export?${params.toString()}`);
+      if (!response.ok) return;
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `jeonju_records_${jeonjuRecordOpenKey}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      // no-op
     }
   };
 
@@ -2738,14 +3295,30 @@ export default function App() {
   };
 
   const onOpenCombinedContacts = async (scope) => {
-    await fetchCombinedContacts(1, scope);
+    const nextFilter = { type: "all", value: "", label: "전체" };
+    setCombinedContactsFilter(nextFilter);
+    if (scope === "matched") {
+      await fetchElectionDistricts();
+    }
+    await fetchCombinedContacts(1, scope, nextFilter);
     navigateTo("combinedContacts");
+  };
+
+  const onSelectCombinedContactsFilter = async (filter) => {
+    setCombinedContactsFilter(filter);
+    await fetchCombinedContacts(1, combinedContactsScope, filter);
   };
 
   const onDownloadCombinedContactsExcel = async () => {
     try {
       const params = new URLSearchParams();
       params.set("scope", combinedContactsScope);
+      if (combinedContactsFilter.type === "district" && combinedContactsFilter.value) {
+        params.set("district_name", combinedContactsFilter.value);
+      }
+      if (combinedContactsFilter.type === "keyword" && combinedContactsFilter.value) {
+        params.set("address_contains", combinedContactsFilter.value);
+      }
       const response = await authFetch(`/stats/combined-contacts/export?${params.toString()}`);
       if (!response.ok) return;
       const blob = await response.blob();
@@ -3123,6 +3696,8 @@ export default function App() {
             ? "메인"
             : activeComponent === "supporter"
               ? "서포터 비교"
+              : activeComponent === "jeonju"
+                ? "전주시 데이터"
               : activeComponent === "stats" || activeComponent === "acquaintanceStats" || activeComponent === "combinedContacts" || activeComponent === "todayManagers" || activeComponent === "dailyDetail"
                 ? statsMode === "overall"
                   ? "전체통계"
@@ -3157,11 +3732,14 @@ export default function App() {
           supporterStats={supporterStats}
           supporterListData={supporterListData}
           supporterListScope={supporterListScope}
+          supporterFilter={supporterFilter}
+          electionDistrictMap={electionDistrictMap}
           onUploadSupporters={onUploadSupporters}
           onDownloadSupporterTemplate={onDownloadSupporterTemplate}
           onRefreshSupporterStats={fetchSupporterStatsSummary}
           onOpenSupporterList={onOpenSupporterList}
-          onPageMoveSupporterList={(page) => fetchSupporterList(page, supporterListScope)}
+          onSelectSupporterFilter={onSelectSupporterFilter}
+          onPageMoveSupporterList={(page) => fetchSupporterList(page, supporterListScope, supporterFilter)}
           onDownloadSupporterListExcel={onDownloadSupporterListExcel}
           onClose={() => navigateTo("main")}
         />
@@ -3175,31 +3753,34 @@ export default function App() {
           onOpenTree={() => navigateTo("tree")}
           onOpenCompare={() => navigateTo("compare")}
           onOpenJeonju={() => navigateTo("jeonju")}
+          onBackToMain={() => navigateTo("main")}
         />
       ) : activeComponent === "jeonju" ? (
-        <section>
-          <h2>전주시 데이터 추가하기</h2>
-          <p className="hint">A열 이름, B열 연락처 형식의 .xlsx 파일을 업로드하세요.</p>
-          {JEONJU_CATEGORIES.map(({ key, label }) => (
-            <form key={key} className="upload-form" onSubmit={(e) => onUploadJeonju(e, key)}>
-              <label className="file-input-wrap">
-                {label} 데이터 추가 (.xlsx)
-                <input
-                  type="file"
-                  accept=".xlsx"
-                  onChange={(e) => onSetJeonjuFile(key, e.target.files?.[0] || null)}
-                />
-              </label>
-              <button type="submit" disabled={loading}>
-                {loading ? "업로드 중..." : `${label} 업로드`}
-              </button>
-            </form>
-          ))}
-          {jeonjuMessage ? <p className="hint">{jeonjuMessage}</p> : null}
-          <button type="button" className="secondary-btn" onClick={() => navigateTo("home")}>
-            돌아가기
-          </button>
-        </section>
+        <JeonjuPanel
+          loading={loading}
+          jeonjuFiles={jeonjuFiles}
+          jeonjuMessage={jeonjuMessage}
+          jeonjuUploadOpen={jeonjuUploadOpen}
+          jeonjuRecordSummary={jeonjuRecordSummary}
+          jeonjuRecordData={jeonjuRecordData}
+          jeonjuRecordOpenKey={jeonjuRecordOpenKey}
+          jeonjuRecordSearchName={jeonjuRecordSearchName}
+          jeonjuRecordSearchPhone={jeonjuRecordSearchPhone}
+          setJeonjuRecordSearchName={setJeonjuRecordSearchName}
+          setJeonjuRecordSearchPhone={setJeonjuRecordSearchPhone}
+          onToggleUpload={() => setJeonjuUploadOpen((prev) => !prev)}
+          onSetJeonjuFile={onSetJeonjuFile}
+          onUploadJeonju={onUploadJeonju}
+          onOpenJeonjuRecords={(category) => fetchJeonjuRecordList(category, 1)}
+          onSearchJeonjuRecords={onSearchJeonjuRecords}
+          onResetJeonjuRecords={onResetJeonjuRecords}
+          onDownloadJeonjuRecordsExcel={onDownloadJeonjuRecordsExcel}
+          onPageMoveJeonjuRecords={(page) => {
+            if (page < 1) return;
+            fetchJeonjuRecordList(jeonjuRecordOpenKey, page);
+          }}
+          onClose={() => navigateTo("home")}
+        />
       ) : activeComponent === "form" ? (
         <UploadPanel
           loading={loading}
@@ -3305,7 +3886,10 @@ export default function App() {
         <CombinedContactsPanel
           data={combinedContactsData}
           scope={combinedContactsScope}
-          onPageMove={(page) => fetchCombinedContacts(page, combinedContactsScope)}
+          combinedContactsFilter={combinedContactsFilter}
+          electionDistrictMap={electionDistrictMap}
+          onSelectCombinedContactsFilter={onSelectCombinedContactsFilter}
+          onPageMove={(page) => fetchCombinedContacts(page, combinedContactsScope, combinedContactsFilter)}
           onDownloadExcel={onDownloadCombinedContactsExcel}
           onBackToStats={() => navigateTo(statsRootView)}
           onClose={() => navigateTo("main")}
@@ -3371,7 +3955,7 @@ export default function App() {
           isDailyOpen={isDailyStatsOpen}
           dailyRows={dailyStatsRows}
           onToggleDaily={onToggleDailyStats}
-          onDownloadDailyExcel={onDownloadDailyExcel}
+          onDownloadDailyExcel={onDownloadDailyStatsExcel}
           onOpenCombinedTotal={() => onOpenCombinedContacts("total")}
           onOpenCombinedMatched={() => onOpenCombinedContacts("matched")}
           onOpenContacts={() => {
@@ -3390,6 +3974,7 @@ export default function App() {
         <StatsPanel
           summary={statsSummary}
           showUnifiedCards
+          overallOnly
           isDailyOpen={isDailyStatsOpen}
           dailyRows={dailyStatsRows}
           onToggleDaily={onToggleDailyStats}

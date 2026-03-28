@@ -223,6 +223,11 @@ select {
   box-shadow: 0 6px 16px rgba(30, 64, 175, 0.08);
 }
 
+.stats-card-selected {
+  border-color: #1d4ed8;
+  box-shadow: 0 6px 16px rgba(30, 64, 175, 0.12);
+}
+
 .stats-card span {
   font-size: 22px;
   font-weight: 700;
@@ -242,6 +247,15 @@ select {
   overflow-x: auto;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
+}
+
+.table-search-bar {
+  margin: 10px 0 12px;
+}
+
+.table-search-bar input {
+  min-width: 240px;
+  max-width: 420px;
 }
 
 .category-wrap {
@@ -454,6 +468,11 @@ select {
   margin-bottom: 8px;
 }
 
+.jeonju-upload-section,
+.jeonju-records-section {
+  margin-top: 18px;
+}
+
 .floating-tree-btn {
   position: fixed;
   right: 20px;
@@ -499,7 +518,8 @@ select {
 }
 
 table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   min-width: 760px;
 }
@@ -509,6 +529,8 @@ td {
   text-align: left;
   border-bottom: 1px solid #e2e8f0;
   padding: 10px 12px;
+  white-space: nowrap;
+  word-break: keep-all;
 }
 
 thead th {

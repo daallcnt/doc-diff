@@ -124,6 +124,29 @@ class SupporterListRead(BaseModel):
     items: list[SupporterListItemRead]
 
 
+class JeonjuRecordSummaryRead(BaseModel):
+    category: str
+    total: int
+    refreshed_at: datetime
+
+
+class JeonjuRecordItemRead(BaseModel):
+    id: int
+    category: str
+    jeonju_name: str | None
+    phone: str
+    created_at: datetime
+
+
+class JeonjuRecordListRead(BaseModel):
+    category: str
+    total: int
+    page: int
+    page_size: int
+    refreshed_at: datetime
+    items: list[JeonjuRecordItemRead]
+
+
 class StatsSummaryRead(BaseModel):
     total_managers: int
     today_representatives: int
