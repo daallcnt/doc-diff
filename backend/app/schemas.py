@@ -179,6 +179,14 @@ class UnifiedContactListRead(BaseModel):
     items: list[UnifiedContactListItemRead]
 
 
+class CategoryCountRead(BaseModel):
+    category_type: str
+    key: str
+    label: str
+    count: int
+    refreshed_at: datetime
+
+
 class DailyStatsRead(BaseModel):
     stat_date: str
     representatives_added: int

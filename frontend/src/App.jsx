@@ -618,6 +618,7 @@ function CombinedContactsPanel({
   scope,
   combinedContactsFilter,
   electionDistrictMap,
+  combinedContactsCategoryCounts,
   onSelectCombinedContactsFilter,
   onPageMove,
   onDownloadExcel,
@@ -662,7 +663,7 @@ function CombinedContactsPanel({
               className={`chip-btn ${combinedContactsFilter.type === "all" ? "active" : ""}`}
               onClick={() => onSelectCombinedContactsFilter({ type: "all", value: "", label: "전체" })}
             >
-              전체
+              전체 ({data.total})
             </button>
             {Object.keys(electionDistrictMap).map((districtName) => (
               <button
@@ -671,10 +672,10 @@ function CombinedContactsPanel({
                 className={`chip-btn ${combinedContactsFilter.type === "district" && combinedContactsFilter.value === districtName ? "active" : ""}`}
                 onClick={() => onSelectCombinedContactsFilter({ type: "district", value: districtName, label: districtName })}
               >
-                {districtName}
+                {districtName} ({combinedContactsCategoryCounts[`district:${districtName}`] || 0})
               </button>
-              ))}
-            </div>
+            ))}
+          </div>
           <p className="hint">동 카테고리</p>
           <div className="district-download-buttons">
             <button
@@ -682,14 +683,14 @@ function CombinedContactsPanel({
               className={`chip-btn ${combinedContactsFilter.type === "keyword" && combinedContactsFilter.value === "효자동" ? "active" : ""}`}
               onClick={() => onSelectCombinedContactsFilter({ type: "keyword", value: "효자동", label: "효자동 전체" })}
             >
-              효자동 전체
+              효자동 전체 ({combinedContactsCategoryCounts["keyword:효자동"] || 0})
             </button>
             <button
               type="button"
               className={`chip-btn ${combinedContactsFilter.type === "keyword" && combinedContactsFilter.value === "송천동" ? "active" : ""}`}
               onClick={() => onSelectCombinedContactsFilter({ type: "keyword", value: "송천동", label: "송천동 전체" })}
             >
-              송천동 전체
+              송천동 전체 ({combinedContactsCategoryCounts["keyword:송천동"] || 0})
             </button>
           </div>
           {combinedContactsFilter.type !== "all" ? <p className="hint">선택된 카테고리: {combinedContactsFilter.label}</p> : null}
@@ -2281,6 +2282,7 @@ export default function App() {
   });
   const [combinedContactsScope, setCombinedContactsScope] = useState("total");
   const [combinedContactsFilter, setCombinedContactsFilter] = useState({ type: "all", value: "", label: "전체" });
+  const [combinedContactsCategoryCounts, setCombinedContactsCategoryCounts] = useState({});
   const [combinedContactsData, setCombinedContactsData] = useState({
     scope: "total",
     total: 0,
@@ -2506,6 +2508,16 @@ export default function App() {
     setCombinedContactsScope(scope);
   };
 
+  const fetchCombinedContactCategoryCounts = async () => {
+    const response = await authFetch("/stats/combined-contacts/category-counts");
+    const data = await response.json();
+    const next = {};
+    data.forEach((item) => {
+      next[`${item.category_type}:${item.key}`] = item.count;
+    });
+    setCombinedContactsCategoryCounts(next);
+  };
+
   const fetchSupporterStatsSummary = async () => {
     const response = await authFetch("/supporters/stats/summary");
     const data = await response.json();
@@ -2723,6 +2735,7 @@ export default function App() {
     if (!token || activeComponent !== "combinedContacts") return;
     if (combinedContactsScope === "matched") {
       fetchElectionDistricts();
+      fetchCombinedContactCategoryCounts();
     }
     fetchCombinedContacts(1, combinedContactsScope, combinedContactsFilter);
   }, [token, activeComponent]);
@@ -3296,12 +3309,14 @@ export default function App() {
 
   const onOpenCombinedContacts = async (scope) => {
     const nextFilter = { type: "all", value: "", label: "전체" };
+    setCombinedContactsScope(scope);
     setCombinedContactsFilter(nextFilter);
+    navigateTo("combinedContacts");
     if (scope === "matched") {
       await fetchElectionDistricts();
+      await fetchCombinedContactCategoryCounts();
     }
     await fetchCombinedContacts(1, scope, nextFilter);
-    navigateTo("combinedContacts");
   };
 
   const onSelectCombinedContactsFilter = async (filter) => {
@@ -3888,6 +3903,7 @@ export default function App() {
           scope={combinedContactsScope}
           combinedContactsFilter={combinedContactsFilter}
           electionDistrictMap={electionDistrictMap}
+          combinedContactsCategoryCounts={combinedContactsCategoryCounts}
           onSelectCombinedContactsFilter={onSelectCombinedContactsFilter}
           onPageMove={(page) => fetchCombinedContacts(page, combinedContactsScope, combinedContactsFilter)}
           onDownloadExcel={onDownloadCombinedContactsExcel}

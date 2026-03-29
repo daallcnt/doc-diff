@@ -31,6 +31,7 @@ from .parsers import (
     parse_pdf_file,
 )
 from .schemas import (
+    CategoryCountRead,
     ContactCategoryRead,
     ContactListItemRead,
     ContactListRead,
@@ -919,6 +920,123 @@ def get_stats_summary(_: None = Depends(require_auth), db: Session = Depends(get
         ).mappings().first()
 
     return StatsSummaryRead(**row)
+
+
+@app.get("/stats/combined-contacts/category-counts", response_model=list[CategoryCountRead])
+def get_combined_contact_category_counts(_: None = Depends(require_auth), db: Session = Depends(get_db)):
+    base_cte = f"""
+        WITH unified_people AS (
+          SELECT
+            u.phone_normalized,
+            u.phone,
+            u.person_name,
+            u.supporter_name,
+            u.source,
+            u.created_at,
+            u.source_priority,
+            u.id
+          FROM (
+            SELECT
+              r.phone_normalized,
+              r.phone,
+              r.person_name,
+              NULL::text AS supporter_name,
+              'acquaintance'::text AS source,
+              r.created_at,
+              1 AS source_priority,
+              r.id
+            FROM data_records r
+            WHERE COALESCE(r.phone_normalized, '') <> ''
+            UNION ALL
+            SELECT
+              s.phone_normalized,
+              s.phone,
+              NULL::text AS person_name,
+              s.supporter_name,
+              'supporter'::text AS source,
+              s.created_at,
+              2 AS source_priority,
+              s.id
+            FROM supporter_records s
+            WHERE COALESCE(s.phone_normalized, '') <> ''
+          ) u
+        ),
+        unified_dedup AS (
+          SELECT DISTINCT ON (phone_normalized)
+            phone_normalized,
+            phone,
+            person_name,
+            supporter_name,
+            source,
+            created_at
+          FROM unified_people
+          ORDER BY phone_normalized, created_at DESC, source_priority ASC, id DESC
+        ),
+        matched AS (
+          SELECT
+            u.phone_normalized,
+            c.city_county,
+            c.district,
+            c.dong,
+            c.address_detail
+          FROM unified_dedup u
+          LEFT JOIN compare_records_view c ON c.phone_normalized = u.phone_normalized
+          WHERE {SUPPORTER_ADDRESS_MATCH_CONDITION}
+        )
+    """
+
+    items: list[CategoryCountRead] = []
+    refreshed_at = datetime.now(tz=KST)
+
+    for district_name, dongs in DEFAULT_ELECTION_DISTRICT_DONGS.items():
+        row = db.execute(
+            text(
+                base_cte
+                + """
+                SELECT COUNT(*)::int AS count, NOW() AS refreshed_at
+                FROM matched
+                WHERE COALESCE(TRIM(dong), '') = ANY(:dongs)
+                """
+            ),
+            {"dongs": dongs},
+        ).mappings().first()
+        items.append(
+            CategoryCountRead(
+                category_type="district",
+                key=district_name,
+                label=district_name,
+                count=int(row["count"]) if row else 0,
+                refreshed_at=row["refreshed_at"] if row else refreshed_at,
+            )
+        )
+
+    for keyword in ["효자동", "송천동"]:
+        row = db.execute(
+            text(
+                base_cte
+                + """
+                SELECT COUNT(*)::int AS count, NOW() AS refreshed_at
+                FROM matched
+                WHERE
+                  COALESCE(city_county, '') ILIKE :keyword
+                  OR COALESCE(district, '') ILIKE :keyword
+                  OR COALESCE(dong, '') ILIKE :keyword
+                  OR COALESCE(address_detail, '') ILIKE :keyword
+                """
+            ),
+            {"keyword": f"%{keyword}%"},
+        ).mappings().first()
+        items.append(
+            CategoryCountRead(
+                category_type="keyword",
+                key=keyword,
+                label=f"{keyword} 전체",
+                count=int(row["count"]) if row else 0,
+                refreshed_at=row["refreshed_at"] if row else refreshed_at,
+            )
+        )
+
+    return items
 
 
 @app.get("/stats/combined-contacts", response_model=UnifiedContactListRead)
