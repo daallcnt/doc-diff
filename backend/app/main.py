@@ -217,6 +217,13 @@ def ensure_tables(db: Session) -> None:
               latest_updated_at TIMESTAMPTZ,
               refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
+
+            CREATE TABLE IF NOT EXISTS combined_contacts_view_meta (
+              id INTEGER PRIMARY KEY,
+              total_count INTEGER NOT NULL DEFAULT 0,
+              matched_count INTEGER NOT NULL DEFAULT 0,
+              refreshed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
             """
         )
     )
@@ -250,6 +257,21 @@ def ensure_tables(db: Session) -> None:
               address_detail TEXT,
               created_at TIMESTAMPTZ NOT NULL,
               updated_at TIMESTAMPTZ NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS combined_contacts_view (
+              phone_normalized TEXT PRIMARY KEY,
+              phone TEXT,
+              person_name TEXT,
+              supporter_name TEXT,
+              source TEXT NOT NULL,
+              city_county TEXT,
+              district TEXT,
+              dong TEXT,
+              address_detail TEXT,
+              has_address BOOLEAN NOT NULL DEFAULT FALSE,
+              created_at TIMESTAMPTZ NOT NULL,
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
 
             CREATE TABLE IF NOT EXISTS election_district_dongs (
@@ -303,6 +325,9 @@ def ensure_tables(db: Session) -> None:
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_election_dong ON election_district_dongs(dong)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_compare_records_view_updated_at ON compare_records_view(updated_at DESC, id DESC)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_compare_records_view_phone_norm ON compare_records_view(phone_normalized)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_combined_contacts_view_created_at ON combined_contacts_view(created_at DESC)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_combined_contacts_view_has_address ON combined_contacts_view(has_address)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_combined_contacts_view_dong ON combined_contacts_view(dong)"))
     db.execute(text("CREATE INDEX IF NOT EXISTS idx_supporter_records_created_at ON supporter_records(created_at DESC)"))
     db.execute(text("ALTER TABLE compare_records_view_meta ADD COLUMN IF NOT EXISTS dong_count INTEGER NOT NULL DEFAULT 0"))
     for district_name, dongs in DEFAULT_ELECTION_DISTRICT_DONGS.items():
@@ -483,6 +508,115 @@ def recompute_compare_records_view(db: Session) -> None:
     db.commit()
 
 
+def refresh_combined_contacts_view_meta(db: Session) -> None:
+    row = db.execute(
+        text(
+            """
+            SELECT
+              COUNT(*)::int AS total_count,
+              COUNT(*) FILTER (WHERE has_address = TRUE)::int AS matched_count
+            FROM combined_contacts_view
+            """
+        )
+    ).mappings().first()
+
+    db.execute(
+        text(
+            """
+            INSERT INTO combined_contacts_view_meta(id, total_count, matched_count, refreshed_at)
+            VALUES (1, :total_count, :matched_count, NOW())
+            ON CONFLICT (id)
+            DO UPDATE SET
+              total_count = EXCLUDED.total_count,
+              matched_count = EXCLUDED.matched_count,
+              refreshed_at = NOW()
+            """
+        ),
+        {
+            "total_count": row["total_count"] if row else 0,
+            "matched_count": row["matched_count"] if row else 0,
+        },
+    )
+
+
+def recompute_combined_contacts_view(db: Session) -> None:
+    db.execute(text("TRUNCATE TABLE combined_contacts_view"))
+    db.execute(
+        text(
+            f"""
+            WITH unified_people AS (
+              SELECT
+                u.phone_normalized,
+                u.phone,
+                u.person_name,
+                u.supporter_name,
+                u.source,
+                u.created_at,
+                u.source_priority,
+                u.id
+              FROM (
+                SELECT
+                  r.phone_normalized,
+                  r.phone,
+                  r.person_name,
+                  NULL::text AS supporter_name,
+                  'acquaintance'::text AS source,
+                  r.created_at,
+                  1 AS source_priority,
+                  r.id
+                FROM data_records r
+                WHERE COALESCE(r.phone_normalized, '') <> ''
+                UNION ALL
+                SELECT
+                  s.phone_normalized,
+                  s.phone,
+                  NULL::text AS person_name,
+                  s.supporter_name,
+                  'supporter'::text AS source,
+                  s.created_at,
+                  2 AS source_priority,
+                  s.id
+                FROM supporter_records s
+                WHERE COALESCE(s.phone_normalized, '') <> ''
+              ) u
+            ),
+            unified_dedup AS (
+              SELECT DISTINCT ON (phone_normalized)
+                phone_normalized,
+                phone,
+                person_name,
+                supporter_name,
+                source,
+                created_at
+              FROM unified_people
+              ORDER BY phone_normalized, created_at DESC, source_priority ASC, id DESC
+            )
+            INSERT INTO combined_contacts_view(
+              phone_normalized, phone, person_name, supporter_name, source,
+              city_county, district, dong, address_detail, has_address, created_at, updated_at
+            )
+            SELECT
+              u.phone_normalized,
+              COALESCE(NULLIF(TRIM(u.phone), ''), u.phone_normalized) AS phone,
+              u.person_name,
+              u.supporter_name,
+              u.source,
+              c.city_county,
+              c.district,
+              c.dong,
+              c.address_detail,
+              CASE WHEN {SUPPORTER_ADDRESS_MATCH_CONDITION} THEN TRUE ELSE FALSE END AS has_address,
+              u.created_at,
+              NOW()
+            FROM unified_dedup u
+            LEFT JOIN compare_records_view c ON c.phone_normalized = u.phone_normalized
+            """
+        )
+    )
+    refresh_combined_contacts_view_meta(db)
+    db.commit()
+
+
 def refresh_compare_records_view_meta(db: Session) -> None:
     row = db.execute(
         text(
@@ -546,6 +680,96 @@ def upsert_compare_records_view_for_phones(
         {"phones": phones},
     )
     refresh_compare_records_view_meta(db)
+
+
+def upsert_combined_contacts_view_for_phones(
+    db: Session, phone_norms: set[str] | list[str] | tuple[str, ...]
+) -> None:
+    phones = sorted({(p or "").strip() for p in phone_norms if (p or "").strip()})
+    if not phones:
+        refresh_combined_contacts_view_meta(db)
+        return
+
+    db.execute(
+        text("DELETE FROM combined_contacts_view WHERE phone_normalized = ANY(:phones)"),
+        {"phones": phones},
+    )
+    db.execute(
+        text(
+            f"""
+            WITH unified_people AS (
+              SELECT
+                u.phone_normalized,
+                u.phone,
+                u.person_name,
+                u.supporter_name,
+                u.source,
+                u.created_at,
+                u.source_priority,
+                u.id
+              FROM (
+                SELECT
+                  r.phone_normalized,
+                  r.phone,
+                  r.person_name,
+                  NULL::text AS supporter_name,
+                  'acquaintance'::text AS source,
+                  r.created_at,
+                  1 AS source_priority,
+                  r.id
+                FROM data_records r
+                WHERE COALESCE(r.phone_normalized, '') <> ''
+                  AND r.phone_normalized = ANY(:phones)
+                UNION ALL
+                SELECT
+                  s.phone_normalized,
+                  s.phone,
+                  NULL::text AS person_name,
+                  s.supporter_name,
+                  'supporter'::text AS source,
+                  s.created_at,
+                  2 AS source_priority,
+                  s.id
+                FROM supporter_records s
+                WHERE COALESCE(s.phone_normalized, '') <> ''
+                  AND s.phone_normalized = ANY(:phones)
+              ) u
+            ),
+            unified_dedup AS (
+              SELECT DISTINCT ON (phone_normalized)
+                phone_normalized,
+                phone,
+                person_name,
+                supporter_name,
+                source,
+                created_at
+              FROM unified_people
+              ORDER BY phone_normalized, created_at DESC, source_priority ASC, id DESC
+            )
+            INSERT INTO combined_contacts_view(
+              phone_normalized, phone, person_name, supporter_name, source,
+              city_county, district, dong, address_detail, has_address, created_at, updated_at
+            )
+            SELECT
+              u.phone_normalized,
+              COALESCE(NULLIF(TRIM(u.phone), ''), u.phone_normalized) AS phone,
+              u.person_name,
+              u.supporter_name,
+              u.source,
+              c.city_county,
+              c.district,
+              c.dong,
+              c.address_detail,
+              CASE WHEN {SUPPORTER_ADDRESS_MATCH_CONDITION} THEN TRUE ELSE FALSE END AS has_address,
+              u.created_at,
+              NOW()
+            FROM unified_dedup u
+            LEFT JOIN compare_records_view c ON c.phone_normalized = u.phone_normalized
+            """
+        ),
+        {"phones": phones},
+    )
+    refresh_combined_contacts_view_meta(db)
 
 
 def upsert_contacts_view_for_phones(db: Session, phone_norms: set[str] | list[str] | tuple[str, ...]) -> None:
@@ -634,21 +858,12 @@ def upsert_contacts_view_for_phones(db: Session, phone_norms: set[str] | list[st
 
 
 def refresh_stats_if_needed(db: Session) -> None:
-    summary = db.execute(
-        text("SELECT refreshed_at FROM stats_view WHERE id = 1")
-    ).mappings().first()
-    if summary is None:
-        recompute_stats_view(db)
-        return
-
-    refreshed_at = summary["refreshed_at"]
-    if not isinstance(refreshed_at, datetime):
-        recompute_stats_view(db)
-        return
-
-    last_kst_date = refreshed_at.astimezone(KST).date()
-    today_kst_date = datetime.now(KST).date()
-    if last_kst_date < today_kst_date:
+    stats_meta = db.execute(text("SELECT refreshed_at FROM stats_view WHERE id = 1")).mappings().first()
+    combined_meta = db.execute(text("SELECT refreshed_at FROM combined_contacts_view_meta WHERE id = 1")).mappings().first()
+    if stats_meta is None or combined_meta is None:
+        recompute_compare_records_view(db)
+        recompute_contacts_view(db)
+        recompute_combined_contacts_view(db)
         recompute_stats_view(db)
 
 
@@ -660,15 +875,17 @@ def start_daily_stats_recompute_thread() -> None:
         _stats_thread_started = True
 
     def _worker():
-        last_run_date = datetime.now(KST).date()
+        now_kst = datetime.now(KST)
+        last_run_date = now_kst.date() if now_kst.hour >= 3 else None
         while True:
             try:
                 now_kst = datetime.now(KST)
-                if now_kst.date() > last_run_date:
+                if now_kst.hour >= 3 and last_run_date != now_kst.date():
                     db = SessionLocal()
                     try:
-                        recompute_contacts_view(db)
                         recompute_compare_records_view(db)
+                        recompute_contacts_view(db)
+                        recompute_combined_contacts_view(db)
                         recompute_stats_view(db)
                     finally:
                         db.close()
@@ -689,6 +906,7 @@ def on_startup() -> None:
         ensure_tables(db)
         recompute_compare_records_view(db)
         recompute_contacts_view(db)
+        recompute_combined_contacts_view(db)
         recompute_stats_view(db)
         start_daily_stats_recompute_thread()
     finally:
@@ -777,143 +995,42 @@ def get_stats_summary(_: None = Depends(require_auth), db: Session = Depends(get
     refresh_stats_if_needed(db)
     row = db.execute(
         text(
-            f"""
-            WITH unified_people AS (
-              SELECT
-                u.phone_normalized,
-                u.phone,
-                u.person_name,
-                u.supporter_name,
-                u.created_at,
-                u.source_priority,
-                u.id
-              FROM (
-                SELECT
-                  r.phone_normalized,
-                  r.phone,
-                  r.person_name,
-                  NULL::text AS supporter_name,
-                  r.created_at,
-                  r.id,
-                  1 AS source_priority
-                FROM data_records r
-                WHERE COALESCE(r.phone_normalized, '') <> ''
-                UNION ALL
-                SELECT
-                  s.phone_normalized,
-                  s.phone,
-                  NULL::text AS person_name,
-                  s.supporter_name,
-                  s.created_at,
-                  s.id,
-                  2 AS source_priority
-                FROM supporter_records s
-                WHERE COALESCE(s.phone_normalized, '') <> ''
-              ) u
-              ORDER BY u.phone_normalized, u.created_at DESC, u.source_priority ASC, u.id DESC
-            ),
-            unified_dedup AS (
-              SELECT DISTINCT ON (phone_normalized)
-                phone_normalized,
-                phone,
-                person_name,
-                supporter_name,
-                created_at
-              FROM unified_people
-              ORDER BY phone_normalized, created_at DESC, source_priority ASC, id DESC
-            ),
-            unified_meta AS (
-              SELECT
-                COUNT(*)::int AS unified_total_people,
-                COUNT(*) FILTER (
-                  WHERE {SUPPORTER_ADDRESS_MATCH_CONDITION}
-                )::int AS unified_matched_with_address
-              FROM unified_dedup u
-              LEFT JOIN compare_records_view c ON c.phone_normalized = u.phone_normalized
-            )
+            """
             SELECT
               s.total_managers,
               s.today_representatives,
               s.today_added_managers,
               s.favorite_contacts,
               s.total_contacts,
-              unified_meta.unified_total_people,
-              unified_meta.unified_matched_with_address,
-              s.refreshed_at
-            FROM stats_view s, unified_meta
+              cm.total_count AS unified_total_people,
+              cm.matched_count AS unified_matched_with_address,
+              GREATEST(s.refreshed_at, cm.refreshed_at) AS refreshed_at
+            FROM stats_view s
+            JOIN combined_contacts_view_meta cm ON cm.id = 1
             WHERE s.id = 1
             """
         )
     ).mappings().first()
 
     if row is None:
+        recompute_compare_records_view(db)
+        recompute_contacts_view(db)
+        recompute_combined_contacts_view(db)
         recompute_stats_view(db)
         row = db.execute(
             text(
-                f"""
-                WITH unified_people AS (
-                  SELECT
-                    u.phone_normalized,
-                    u.phone,
-                    u.person_name,
-                    u.supporter_name,
-                    u.created_at,
-                    u.source_priority,
-                    u.id
-                  FROM (
-                    SELECT
-                      r.phone_normalized,
-                      r.phone,
-                      r.person_name,
-                      NULL::text AS supporter_name,
-                      r.created_at,
-                      r.id,
-                      1 AS source_priority
-                    FROM data_records r
-                    WHERE COALESCE(r.phone_normalized, '') <> ''
-                    UNION ALL
-                    SELECT
-                      s.phone_normalized,
-                      s.phone,
-                      NULL::text AS person_name,
-                      s.supporter_name,
-                      s.created_at,
-                      s.id,
-                      2 AS source_priority
-                    FROM supporter_records s
-                    WHERE COALESCE(s.phone_normalized, '') <> ''
-                  ) u
-                  ORDER BY u.phone_normalized, u.created_at DESC, u.source_priority ASC, u.id DESC
-                ),
-                unified_dedup AS (
-                  SELECT DISTINCT ON (phone_normalized)
-                    phone_normalized,
-                    phone,
-                    person_name,
-                    supporter_name,
-                    created_at
-                  FROM unified_people
-                  ORDER BY phone_normalized, created_at DESC, source_priority ASC, id DESC
-                ),
-                unified_meta AS (
-                  SELECT
-                    COUNT(*)::int AS unified_total_people,
-                    COUNT(*) FILTER (
-                      WHERE {SUPPORTER_ADDRESS_MATCH_CONDITION}
-                    )::int AS unified_matched_with_address
-                  FROM unified_dedup u
-                  LEFT JOIN compare_records_view c ON c.phone_normalized = u.phone_normalized
-                )
+                """
                 SELECT
                   s.total_managers,
                   s.today_representatives,
                   s.today_added_managers,
                   s.favorite_contacts,
                   s.total_contacts,
-                  unified_meta.unified_total_people,
-                  unified_meta.unified_matched_with_address,
-                  s.refreshed_at
-                FROM stats_view s, unified_meta
+                  cm.total_count AS unified_total_people,
+                  cm.matched_count AS unified_matched_with_address,
+                  GREATEST(s.refreshed_at, cm.refreshed_at) AS refreshed_at
+                FROM stats_view s
+                JOIN combined_contacts_view_meta cm ON cm.id = 1
                 WHERE s.id = 1
                 """
             )
@@ -924,76 +1041,14 @@ def get_stats_summary(_: None = Depends(require_auth), db: Session = Depends(get
 
 @app.get("/stats/combined-contacts/category-counts", response_model=list[CategoryCountRead])
 def get_combined_contact_category_counts(_: None = Depends(require_auth), db: Session = Depends(get_db)):
-    base_cte = f"""
-        WITH unified_people AS (
-          SELECT
-            u.phone_normalized,
-            u.phone,
-            u.person_name,
-            u.supporter_name,
-            u.source,
-            u.created_at,
-            u.source_priority,
-            u.id
-          FROM (
-            SELECT
-              r.phone_normalized,
-              r.phone,
-              r.person_name,
-              NULL::text AS supporter_name,
-              'acquaintance'::text AS source,
-              r.created_at,
-              1 AS source_priority,
-              r.id
-            FROM data_records r
-            WHERE COALESCE(r.phone_normalized, '') <> ''
-            UNION ALL
-            SELECT
-              s.phone_normalized,
-              s.phone,
-              NULL::text AS person_name,
-              s.supporter_name,
-              'supporter'::text AS source,
-              s.created_at,
-              2 AS source_priority,
-              s.id
-            FROM supporter_records s
-            WHERE COALESCE(s.phone_normalized, '') <> ''
-          ) u
-        ),
-        unified_dedup AS (
-          SELECT DISTINCT ON (phone_normalized)
-            phone_normalized,
-            phone,
-            person_name,
-            supporter_name,
-            source,
-            created_at
-          FROM unified_people
-          ORDER BY phone_normalized, created_at DESC, source_priority ASC, id DESC
-        ),
-        matched AS (
-          SELECT
-            u.phone_normalized,
-            c.city_county,
-            c.district,
-            c.dong,
-            c.address_detail
-          FROM unified_dedup u
-          LEFT JOIN compare_records_view c ON c.phone_normalized = u.phone_normalized
-          WHERE {SUPPORTER_ADDRESS_MATCH_CONDITION}
-        )
-    """
-
     items: list[CategoryCountRead] = []
     refreshed_at = datetime.now(tz=KST)
-
     total_row = db.execute(
         text(
-            base_cte
-            + """
-            SELECT COUNT(*)::int AS count, NOW() AS refreshed_at
-            FROM matched
+            """
+            SELECT matched_count AS count, refreshed_at
+            FROM combined_contacts_view_meta
+            WHERE id = 1
             """
         )
     ).mappings().first()
@@ -1010,11 +1065,11 @@ def get_combined_contact_category_counts(_: None = Depends(require_auth), db: Se
     for district_name, dongs in DEFAULT_ELECTION_DISTRICT_DONGS.items():
         row = db.execute(
             text(
-                base_cte
-                + """
+                """
                 SELECT COUNT(*)::int AS count, NOW() AS refreshed_at
-                FROM matched
+                FROM combined_contacts_view
                 WHERE COALESCE(TRIM(dong), '') = ANY(:dongs)
+                  AND has_address = TRUE
                 """
             ),
             {"dongs": dongs},
@@ -1032,15 +1087,17 @@ def get_combined_contact_category_counts(_: None = Depends(require_auth), db: Se
     for keyword in ["효자동", "송천동"]:
         row = db.execute(
             text(
-                base_cte
-                + """
+                """
                 SELECT COUNT(*)::int AS count, NOW() AS refreshed_at
-                FROM matched
+                FROM combined_contacts_view
                 WHERE
-                  COALESCE(city_county, '') ILIKE :keyword
-                  OR COALESCE(district, '') ILIKE :keyword
-                  OR COALESCE(dong, '') ILIKE :keyword
-                  OR COALESCE(address_detail, '') ILIKE :keyword
+                  has_address = TRUE
+                  AND (
+                    COALESCE(city_county, '') ILIKE :keyword
+                    OR COALESCE(district, '') ILIKE :keyword
+                    OR COALESCE(dong, '') ILIKE :keyword
+                    OR COALESCE(address_detail, '') ILIKE :keyword
+                  )
                 """
             ),
             {"keyword": f"%{keyword}%"},
@@ -1073,21 +1130,21 @@ def list_combined_contacts(
     conditions: list[str] = []
     params: dict[str, object] = {}
     if scope == UNIFIED_SCOPE_MATCHED:
-        conditions.append(f"({SUPPORTER_ADDRESS_MATCH_CONDITION})")
+        conditions.append("has_address = TRUE")
     if district_name.strip():
         district_dongs = DEFAULT_ELECTION_DISTRICT_DONGS.get(district_name.strip())
         if district_dongs is None:
             raise HTTPException(status_code=400, detail=f"선거구 '{district_name}'를 찾을 수 없습니다.")
-        conditions.append("COALESCE(TRIM(c.dong), '') = ANY(:district_dongs)")
+        conditions.append("COALESCE(TRIM(dong), '') = ANY(:district_dongs)")
         params["district_dongs"] = district_dongs
     if address_contains.strip():
         conditions.append(
             """
             (
-              COALESCE(c.city_county, '') ILIKE :address_like
-              OR COALESCE(c.district, '') ILIKE :address_like
-              OR COALESCE(c.dong, '') ILIKE :address_like
-              OR COALESCE(c.address_detail, '') ILIKE :address_like
+              COALESCE(city_county, '') ILIKE :address_like
+              OR COALESCE(district, '') ILIKE :address_like
+              OR COALESCE(dong, '') ILIKE :address_like
+              OR COALESCE(address_detail, '') ILIKE :address_like
             )
             """
         )
@@ -1098,56 +1155,14 @@ def list_combined_contacts(
     meta = db.execute(
         text(
             f"""
-            WITH unified_people AS (
-              SELECT
-                u.phone_normalized,
-                u.phone,
-                u.person_name,
-                u.supporter_name,
-                u.source,
-                u.created_at,
-                u.source_priority,
-                u.id
-              FROM (
-                SELECT
-                  r.phone_normalized,
-                  r.phone,
-                  r.person_name,
-                  NULL::text AS supporter_name,
-                  'acquaintance'::text AS source,
-                  r.created_at,
-                  1 AS source_priority,
-                  r.id
-                FROM data_records r
-                WHERE COALESCE(r.phone_normalized, '') <> ''
-                UNION ALL
-                SELECT
-                  s.phone_normalized,
-                  s.phone,
-                  NULL::text AS person_name,
-                  s.supporter_name,
-                  'supporter'::text AS source,
-                  s.created_at,
-                  2 AS source_priority,
-                  s.id
-                FROM supporter_records s
-                WHERE COALESCE(s.phone_normalized, '') <> ''
-              ) u
-            ),
-            unified_dedup AS (
-              SELECT DISTINCT ON (phone_normalized)
-                phone_normalized,
-                phone,
-                person_name,
-                supporter_name,
-                source,
-                created_at
-              FROM unified_people
-              ORDER BY phone_normalized, created_at DESC, source_priority ASC, id DESC
-            )
-            SELECT COUNT(*)::int AS total_count, NOW() AS refreshed_at
-            FROM unified_dedup u
-            LEFT JOIN compare_records_view c ON c.phone_normalized = u.phone_normalized
+            SELECT
+              COUNT(*)::int AS total_count,
+              (
+                SELECT refreshed_at
+                FROM combined_contacts_view_meta
+                WHERE id = 1
+              ) AS refreshed_at
+            FROM combined_contacts_view
             {where_sql}
             """
         ),
@@ -1158,67 +1173,19 @@ def list_combined_contacts(
     rows = db.execute(
         text(
             f"""
-            WITH unified_people AS (
-              SELECT
-                u.phone_normalized,
-                u.phone,
-                u.person_name,
-                u.supporter_name,
-                u.source,
-                u.created_at,
-                u.source_priority,
-                u.id
-              FROM (
-                SELECT
-                  r.phone_normalized,
-                  r.phone,
-                  r.person_name,
-                  NULL::text AS supporter_name,
-                  'acquaintance'::text AS source,
-                  r.created_at,
-                  1 AS source_priority,
-                  r.id
-                FROM data_records r
-                WHERE COALESCE(r.phone_normalized, '') <> ''
-                UNION ALL
-                SELECT
-                  s.phone_normalized,
-                  s.phone,
-                  NULL::text AS person_name,
-                  s.supporter_name,
-                  'supporter'::text AS source,
-                  s.created_at,
-                  2 AS source_priority,
-                  s.id
-                FROM supporter_records s
-                WHERE COALESCE(s.phone_normalized, '') <> ''
-              ) u
-            ),
-            unified_dedup AS (
-              SELECT DISTINCT ON (phone_normalized)
-                phone_normalized,
-                phone,
-                person_name,
-                supporter_name,
-                source,
-                created_at
-              FROM unified_people
-              ORDER BY phone_normalized, created_at DESC, source_priority ASC, id DESC
-            )
             SELECT
-              u.phone,
-              u.person_name,
-              u.supporter_name,
-              u.source,
-              c.city_county,
-              c.district,
-              c.dong,
-              c.address_detail,
-              u.created_at
-            FROM unified_dedup u
-            LEFT JOIN compare_records_view c ON c.phone_normalized = u.phone_normalized
+              phone,
+              person_name,
+              supporter_name,
+              source,
+              city_county,
+              district,
+              dong,
+              address_detail,
+              created_at
+            FROM combined_contacts_view
             {where_sql}
-            ORDER BY u.created_at DESC, u.phone DESC
+            ORDER BY created_at DESC, phone DESC
             LIMIT :limit OFFSET :offset
             """
         ),
@@ -1234,67 +1201,19 @@ def list_combined_contacts(
         rows = db.execute(
             text(
                 f"""
-                WITH unified_people AS (
-                  SELECT
-                    u.phone_normalized,
-                    u.phone,
-                    u.person_name,
-                    u.supporter_name,
-                    u.source,
-                    u.created_at,
-                    u.source_priority,
-                    u.id
-                  FROM (
-                    SELECT
-                      r.phone_normalized,
-                      r.phone,
-                      r.person_name,
-                      NULL::text AS supporter_name,
-                      'acquaintance'::text AS source,
-                      r.created_at,
-                      1 AS source_priority,
-                      r.id
-                    FROM data_records r
-                    WHERE COALESCE(r.phone_normalized, '') <> ''
-                    UNION ALL
-                    SELECT
-                      s.phone_normalized,
-                      s.phone,
-                      NULL::text AS person_name,
-                      s.supporter_name,
-                      'supporter'::text AS source,
-                      s.created_at,
-                      2 AS source_priority,
-                      s.id
-                    FROM supporter_records s
-                    WHERE COALESCE(s.phone_normalized, '') <> ''
-                  ) u
-                ),
-                unified_dedup AS (
-                  SELECT DISTINCT ON (phone_normalized)
-                    phone_normalized,
-                    phone,
-                    person_name,
-                    supporter_name,
-                    source,
-                    created_at
-                  FROM unified_people
-                  ORDER BY phone_normalized, created_at DESC, source_priority ASC, id DESC
-                )
                 SELECT
-                  u.phone,
-                  u.person_name,
-                  u.supporter_name,
-                  u.source,
-                  c.city_county,
-                  c.district,
-                  c.dong,
-                  c.address_detail,
-                  u.created_at
-                FROM unified_dedup u
-                LEFT JOIN compare_records_view c ON c.phone_normalized = u.phone_normalized
+                  phone,
+                  person_name,
+                  supporter_name,
+                  source,
+                  city_county,
+                  district,
+                  dong,
+                  address_detail,
+                  created_at
+                FROM combined_contacts_view
                 {where_sql}
-                ORDER BY u.created_at DESC, u.phone DESC
+                ORDER BY created_at DESC, phone DESC
                 LIMIT :limit OFFSET :offset
                 """
             ),
@@ -1325,21 +1244,21 @@ def export_combined_contacts(
     conditions: list[str] = []
     params: dict[str, object] = {}
     if scope == UNIFIED_SCOPE_MATCHED:
-        conditions.append(f"({SUPPORTER_ADDRESS_MATCH_CONDITION})")
+        conditions.append("has_address = TRUE")
     if district_name.strip():
         district_dongs = DEFAULT_ELECTION_DISTRICT_DONGS.get(district_name.strip())
         if district_dongs is None:
             raise HTTPException(status_code=400, detail=f"선거구 '{district_name}'를 찾을 수 없습니다.")
-        conditions.append("COALESCE(TRIM(c.dong), '') = ANY(:district_dongs)")
+        conditions.append("COALESCE(TRIM(dong), '') = ANY(:district_dongs)")
         params["district_dongs"] = district_dongs
     if address_contains.strip():
         conditions.append(
             """
             (
-              COALESCE(c.city_county, '') ILIKE :address_like
-              OR COALESCE(c.district, '') ILIKE :address_like
-              OR COALESCE(c.dong, '') ILIKE :address_like
-              OR COALESCE(c.address_detail, '') ILIKE :address_like
+              COALESCE(city_county, '') ILIKE :address_like
+              OR COALESCE(district, '') ILIKE :address_like
+              OR COALESCE(dong, '') ILIKE :address_like
+              OR COALESCE(address_detail, '') ILIKE :address_like
             )
             """
         )
@@ -1349,67 +1268,19 @@ def export_combined_contacts(
     rows = db.execute(
         text(
             f"""
-            WITH unified_people AS (
-              SELECT
-                u.phone_normalized,
-                u.phone,
-                u.person_name,
-                u.supporter_name,
-                u.source,
-                u.created_at,
-                u.source_priority,
-                u.id
-              FROM (
-                SELECT
-                  r.phone_normalized,
-                  r.phone,
-                  r.person_name,
-                  NULL::text AS supporter_name,
-                  'acquaintance'::text AS source,
-                  r.created_at,
-                  1 AS source_priority,
-                  r.id
-                FROM data_records r
-                WHERE COALESCE(r.phone_normalized, '') <> ''
-                UNION ALL
-                SELECT
-                  s.phone_normalized,
-                  s.phone,
-                  NULL::text AS person_name,
-                  s.supporter_name,
-                  'supporter'::text AS source,
-                  s.created_at,
-                  2 AS source_priority,
-                  s.id
-                FROM supporter_records s
-                WHERE COALESCE(s.phone_normalized, '') <> ''
-              ) u
-            ),
-            unified_dedup AS (
-              SELECT DISTINCT ON (phone_normalized)
-                phone_normalized,
-                phone,
-                person_name,
-                supporter_name,
-                source,
-                created_at
-              FROM unified_people
-              ORDER BY phone_normalized, created_at DESC, source_priority ASC, id DESC
-            )
             SELECT
-              u.phone,
-              u.person_name,
-              u.supporter_name,
-              u.source,
-              c.city_county,
-              c.district,
-              c.dong,
-              c.address_detail,
-              u.created_at
-            FROM unified_dedup u
-            LEFT JOIN compare_records_view c ON c.phone_normalized = u.phone_normalized
+              phone,
+              person_name,
+              supporter_name,
+              source,
+              city_county,
+              district,
+              dong,
+              address_detail,
+              created_at
+            FROM combined_contacts_view
             {where_sql}
-            ORDER BY u.created_at DESC, u.phone DESC
+            ORDER BY created_at DESC, phone DESC
             """
         ),
         params,
@@ -2709,6 +2580,7 @@ async def upload_data_files(
 
     db.commit()
     upsert_contacts_view_for_phones(db, affected_phones)
+    upsert_combined_contacts_view_for_phones(db, affected_phones)
     recompute_stats_view(db)
 
     return UploadSummary(
@@ -2824,6 +2696,8 @@ def _process_supporter_rows(db: Session, rows: list[dict], progress_callback=Non
         progress_callback(rows_read)
 
     db.commit()
+    upsert_combined_contacts_view_for_phones(db, incoming_by_phone.keys())
+    recompute_stats_view(db)
     return {
         "rows_read": rows_read,
         "inserted": inserted,
@@ -3192,6 +3066,7 @@ def _process_data_upload_job(job_id: str, group_id: int, stored_files: list[dict
 
         db.commit()
         upsert_contacts_view_for_phones(db, affected_phones)
+        upsert_combined_contacts_view_for_phones(db, affected_phones)
         recompute_stats_view(db)
         _set_upload_job(
             job_id,
@@ -4032,6 +3907,7 @@ def delete_owner(
     db.commit()
 
     upsert_contacts_view_for_phones(db, affected_phones)
+    upsert_combined_contacts_view_for_phones(db, affected_phones)
     recompute_stats_view(db)
     return {"deleted": True, "owner_id": owner_id}
 
@@ -4358,6 +4234,7 @@ async def upload_compare_records(
 
     upsert_compare_records_view_for_phones(db, touched_compare_phones)
     upsert_contacts_view_for_phones(db, touched_compare_phones)
+    upsert_combined_contacts_view_for_phones(db, touched_compare_phones)
     db.commit()
 
     return CompareUploadSummary(

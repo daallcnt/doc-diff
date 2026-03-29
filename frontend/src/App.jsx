@@ -3341,8 +3341,17 @@ export default function App() {
 
   const onOpenCombinedContacts = async (scope) => {
     const nextFilter = { type: "all", value: "", label: "전체" };
+    const nextTotal = scope === "matched" ? statsSummary.unified_matched_with_address : statsSummary.unified_total_people;
     setCombinedContactsScope(scope);
     setCombinedContactsFilter(nextFilter);
+    setCombinedContactsData((prev) => ({
+      ...prev,
+      scope,
+      total: nextTotal,
+      page: 1,
+      refreshed_at: statsSummary.refreshed_at,
+      items: [],
+    }));
     navigateTo("combinedContacts");
     if (scope === "matched") {
       await fetchElectionDistricts();
@@ -3353,9 +3362,18 @@ export default function App() {
 
   const onOpenOverallCombinedContacts = async (scope) => {
     const nextFilter = { type: "all", value: "", label: "전체" };
+    const nextTotal = scope === "matched" ? statsSummary.unified_matched_with_address : statsSummary.unified_total_people;
     setOverallListScope(scope);
     setCombinedContactsScope(scope);
     setCombinedContactsFilter(nextFilter);
+    setCombinedContactsData((prev) => ({
+      ...prev,
+      scope,
+      total: nextTotal,
+      page: 1,
+      refreshed_at: statsSummary.refreshed_at,
+      items: [],
+    }));
     if (scope === "matched") {
       await fetchElectionDistricts();
       await fetchCombinedContactCategoryCounts();
