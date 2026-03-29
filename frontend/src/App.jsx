@@ -452,12 +452,20 @@ function StatsPanel({
   summary,
   showUnifiedCards = true,
   overallOnly = false,
+  overallListScope = "",
+  overallListData,
+  combinedContactsFilter,
+  electionDistrictMap,
+  combinedContactsCategoryCounts,
   isDailyOpen,
   dailyRows,
   onToggleDaily,
   onDownloadDailyExcel,
   onOpenCombinedTotal,
   onOpenCombinedMatched,
+  onSelectCombinedContactsFilter,
+  onPageMoveCombinedContacts,
+  onDownloadCombinedContactsExcel,
   onOpenContacts,
   onOpenFavoriteContacts,
   onOpenTodayManagers,
@@ -536,6 +544,21 @@ function StatsPanel({
       </div>
 
       <p className="hint">기준시각: {summary.refreshed_at ? new Date(summary.refreshed_at).toLocaleString() : "-"}</p>
+
+      {overallOnly && overallListScope ? (
+        <CombinedContactsPanel
+          data={overallListData}
+          scope={overallListScope}
+          combinedContactsFilter={combinedContactsFilter}
+          electionDistrictMap={electionDistrictMap}
+          combinedContactsCategoryCounts={combinedContactsCategoryCounts}
+          onSelectCombinedContactsFilter={onSelectCombinedContactsFilter}
+          onPageMove={onPageMoveCombinedContacts}
+          onDownloadExcel={onDownloadCombinedContactsExcel}
+          onBackToStats={null}
+          onClose={null}
+        />
+      ) : null}
 
       {!overallOnly && isDailyOpen ? (
         <section className="daily-stats-wrap">
@@ -749,12 +772,16 @@ function CombinedContactsPanel({
         </button>
       </div>
 
-      <button type="button" className="secondary-btn" onClick={onBackToStats}>
-        통계보기로
-      </button>
-      <button type="button" className="secondary-btn" onClick={onClose}>
-        메인으로 돌아가기
-      </button>
+      {onBackToStats ? (
+        <button type="button" className="secondary-btn" onClick={onBackToStats}>
+          통계보기로
+        </button>
+      ) : null}
+      {onClose ? (
+        <button type="button" className="secondary-btn" onClick={onClose}>
+          메인으로 돌아가기
+        </button>
+      ) : null}
     </section>
   );
 }
@@ -2281,6 +2308,7 @@ export default function App() {
     refreshed_at: "",
   });
   const [combinedContactsScope, setCombinedContactsScope] = useState("total");
+  const [overallListScope, setOverallListScope] = useState("");
   const [combinedContactsFilter, setCombinedContactsFilter] = useState({ type: "all", value: "", label: "전체" });
   const [combinedContactsCategoryCounts, setCombinedContactsCategoryCounts] = useState({});
   const [combinedContactsData, setCombinedContactsData] = useState({
@@ -2729,6 +2757,10 @@ export default function App() {
     if (!token || (activeComponent !== "stats" && activeComponent !== "acquaintanceStats")) return;
     fetchStatsSummary();
     setIsDailyStatsOpen(false);
+    if (activeComponent === "stats") {
+      setOverallListScope("");
+      setCombinedContactsFilter({ type: "all", value: "", label: "전체" });
+    }
   }, [token, activeComponent]);
 
   useEffect(() => {
@@ -3312,6 +3344,18 @@ export default function App() {
     setCombinedContactsScope(scope);
     setCombinedContactsFilter(nextFilter);
     navigateTo("combinedContacts");
+    if (scope === "matched") {
+      await fetchElectionDistricts();
+      await fetchCombinedContactCategoryCounts();
+    }
+    await fetchCombinedContacts(1, scope, nextFilter);
+  };
+
+  const onOpenOverallCombinedContacts = async (scope) => {
+    const nextFilter = { type: "all", value: "", label: "전체" };
+    setOverallListScope(scope);
+    setCombinedContactsScope(scope);
+    setCombinedContactsFilter(nextFilter);
     if (scope === "matched") {
       await fetchElectionDistricts();
       await fetchCombinedContactCategoryCounts();
@@ -3991,12 +4035,20 @@ export default function App() {
           summary={statsSummary}
           showUnifiedCards
           overallOnly
+          overallListScope={overallListScope}
+          overallListData={combinedContactsData}
+          combinedContactsFilter={combinedContactsFilter}
+          electionDistrictMap={electionDistrictMap}
+          combinedContactsCategoryCounts={combinedContactsCategoryCounts}
           isDailyOpen={isDailyStatsOpen}
           dailyRows={dailyStatsRows}
           onToggleDaily={onToggleDailyStats}
           onDownloadDailyExcel={onDownloadDailyStatsExcel}
-          onOpenCombinedTotal={() => onOpenCombinedContacts("total")}
-          onOpenCombinedMatched={() => onOpenCombinedContacts("matched")}
+          onOpenCombinedTotal={() => onOpenOverallCombinedContacts("total")}
+          onOpenCombinedMatched={() => onOpenOverallCombinedContacts("matched")}
+          onSelectCombinedContactsFilter={onSelectCombinedContactsFilter}
+          onPageMoveCombinedContacts={(page) => fetchCombinedContacts(page, overallListScope || combinedContactsScope, combinedContactsFilter)}
+          onDownloadCombinedContactsExcel={onDownloadCombinedContactsExcel}
           onOpenContacts={() => {
             setFavoriteOnlyContacts(false);
             navigateTo("contacts");

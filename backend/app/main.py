@@ -988,6 +988,25 @@ def get_combined_contact_category_counts(_: None = Depends(require_auth), db: Se
     items: list[CategoryCountRead] = []
     refreshed_at = datetime.now(tz=KST)
 
+    total_row = db.execute(
+        text(
+            base_cte
+            + """
+            SELECT COUNT(*)::int AS count, NOW() AS refreshed_at
+            FROM matched
+            """
+        )
+    ).mappings().first()
+    items.append(
+        CategoryCountRead(
+            category_type="all",
+            key="all",
+            label="전체",
+            count=int(total_row["count"]) if total_row else 0,
+            refreshed_at=total_row["refreshed_at"] if total_row else refreshed_at,
+        )
+    )
+
     for district_name, dongs in DEFAULT_ELECTION_DISTRICT_DONGS.items():
         row = db.execute(
             text(
